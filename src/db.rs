@@ -6,22 +6,22 @@ use diesel::{prelude::*, PgConnection};
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = transaction_count)]
 pub struct TransactionCount {
-    pub tAddress: String,
+    pub t_address: String,
     pub count: i64,
 }
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = funds_moved)]
 pub struct FundsMoved {
-    pub tAddress: String,
+    pub t_address: String,
     pub amount: i64,
 }
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = dark_burned_sats)]
 pub struct DarkBurnedSats {
-    pub tAddress: String,
-    pub qAddress: String,
+    pub t_address: String,
+    pub q_address: String,
     pub amount: i64,
 }
 
@@ -29,22 +29,22 @@ pub struct DarkBurnedSats {
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = dark_minted_sats)]
 pub struct DarkMintedSats {
-    pub tAddress: String,
-    pub qAddress: String,
+    pub t_address: String,
+    pub q_address: String,
     pub amount: i64,
 }
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = lit_burned_sats)]
 pub struct LitBurnedSats {
-    pub tAddress: String,
+    pub t_address: String,
     pub amount: i64,
 }
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = lit_minted_sats)]
 pub struct LitMintedSats {
-    pub tAddress: String,
+    pub t_address: String,
     pub amount: i64,
 }
 
@@ -52,8 +52,8 @@ pub struct LitMintedSats {
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = addr_mappings)]
 pub struct AddrMappings {
-    pub tAddress: String,
-    pub qAddress: String,
+    pub t_address: String,
+    pub q_address: String,
 }
 
 
@@ -66,24 +66,24 @@ fn establish_connection() -> Result<PgConnection> {
     Ok(conn)
 }
 /// Add a transaction count (increment existing or insert new)
-pub fn upsert_transaction_count(t_address: &str, delta: i64) -> Result<()> {
+pub fn upsert_transaction_count(twilight_address: &str, delta: i64) -> Result<()> {
     use crate::schema::transaction_count::dsl::*;
 
     let mut conn = establish_connection()?;
 
     // Check if exists
     if let Ok(existing) = transaction_count
-        .filter(tAddress.eq(t_address))
+        .filter(t_address.eq(twilight_address))
         .first::<(String, i64)>(&mut conn)
     {
         // Exists: increment count
-        diesel::update(transaction_count.filter(tAddress.eq(t_address)))
+        diesel::update(transaction_count.filter(t_address.eq(twilight_address)))
             .set(count.eq(count + delta))
             .execute(&mut conn)?;
     } else {
         // Insert new
         let new_entry = TransactionCount {
-            tAddress: t_address.to_string(),
+            t_address: twilight_address.to_string(),
             count: delta,
         };
         diesel::insert_into(transaction_count)
@@ -95,20 +95,20 @@ pub fn upsert_transaction_count(t_address: &str, delta: i64) -> Result<()> {
 }
 
 /// Add funds moved (increment existing or insert new)
-pub fn upsert_funds_moved(address_: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_funds_moved(twilight_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::funds_moved::dsl::*;
 
     let mut conn = establish_connection()?;
     if let Ok(_) = funds_moved
-        .filter(tAddress.eq(address_))
+        .filter(t_address.eq(twilight_address))
         .first::<FundsMoved>(&mut conn)
     {
-        diesel::update(funds_moved.filter(tAddress.eq(address_)))
+        diesel::update(funds_moved.filter(t_address.eq(twilight_address)))
             .set(amount.eq(amount + amount_delta))
             .execute(&mut conn)?;
     } else {
         let new_entry = FundsMoved {
-            tAddress: address_.to_string(),
+            t_address: twilight_address.to_string(),
             amount: amount_delta,
         };
         diesel::insert_into(funds_moved)
@@ -119,21 +119,21 @@ pub fn upsert_funds_moved(address_: &str, amount_delta: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn upsert_dark_burned_sats(tAddress_: &str, qAddress_: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_dark_burned_sats(twilight_address: &str, quis_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::dark_burned_sats::dsl::*;
 
     let mut conn = establish_connection()?;
     if let Ok(_) = dark_burned_sats
-        .filter(tAddress.eq(tAddress_))
+        .filter(t_address.eq(twilight_address))
         .first::<DarkBurnedSats>(&mut conn)
     {
-        diesel::update(dark_burned_sats.filter(tAddress.eq(tAddress_)))
+        diesel::update(dark_burned_sats.filter(t_address.eq(twilight_address)))
             .set(amount.eq(amount + amount_delta))
             .execute(&mut conn)?;
     } else {
         let new_entry = DarkBurnedSats {
-            tAddress: tAddress_.to_string(),
-            qAddress: qAddress_.to_string(),
+            t_address: twilight_address.to_string(),
+            q_address: quis_address.to_string(),
             amount: amount_delta,
         };
         diesel::insert_into(dark_burned_sats)
@@ -144,21 +144,21 @@ pub fn upsert_dark_burned_sats(tAddress_: &str, qAddress_: &str, amount_delta: i
     Ok(())
 }
 
-pub fn upsert_dark_minted_sats(tAddress_: &str, qAddress_: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_dark_minted_sats(twilight_address: &str, quis_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::dark_minted_sats::dsl::*;
 
     let mut conn = establish_connection()?;
     if let Ok(_) = dark_minted_sats
-        .filter(tAddress.eq(tAddress_))
+        .filter(t_address.eq(twilight_address))
         .first::<DarkMintedSats>(&mut conn)
     {
-        diesel::update(dark_minted_sats.filter(tAddress.eq(tAddress_)))
+        diesel::update(dark_minted_sats.filter(t_address.eq(twilight_address)))
             .set(amount.eq(amount + amount_delta))
             .execute(&mut conn)?;
     } else {
         let new_entry = DarkMintedSats {
-            tAddress: tAddress_.to_string(),
-            qAddress: qAddress_.to_string(),
+            t_address: twilight_address.to_string(),
+            q_address: quis_address.to_string(),
             amount: amount_delta,
         };
         diesel::insert_into(dark_minted_sats)
@@ -170,20 +170,20 @@ pub fn upsert_dark_minted_sats(tAddress_: &str, qAddress_: &str, amount_delta: i
 }
 
 
-pub fn upsert_lit_minted_sats(tAddress_: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_lit_minted_sats(twilight_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::lit_minted_sats::dsl::*;
 
     let mut conn = establish_connection()?;
     if let Ok(_) = lit_minted_sats
-        .filter(tAddress.eq(tAddress_))
+        .filter(t_address.eq(twilight_address))
         .first::<LitMintedSats>(&mut conn)
     {
-        diesel::update(lit_minted_sats.filter(tAddress.eq(tAddress_)))
+        diesel::update(lit_minted_sats.filter(t_address.eq(twilight_address)))
             .set(amount.eq(amount + amount_delta))
             .execute(&mut conn)?;
     } else {
         let new_entry = LitMintedSats {
-            tAddress: tAddress_.to_string(),
+            t_address: twilight_address.to_string(),
             amount: amount_delta,
         };
         diesel::insert_into(lit_minted_sats)
@@ -195,20 +195,20 @@ pub fn upsert_lit_minted_sats(tAddress_: &str, amount_delta: i64) -> Result<()> 
 }
 
 
-pub fn upsert_lit_burned_sats(tAddress_: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_lit_burned_sats(twilight_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::lit_burned_sats::dsl::*;
 
     let mut conn = establish_connection()?;
     if let Ok(_) = lit_burned_sats
-        .filter(tAddress.eq(tAddress_))
+        .filter(t_address.eq(twilight_address))
         .first::<LitBurnedSats>(&mut conn)
     {
-        diesel::update(lit_burned_sats.filter(tAddress.eq(tAddress_)))
+        diesel::update(lit_burned_sats.filter(t_address.eq(twilight_address)))
             .set(amount.eq(amount + amount_delta))
             .execute(&mut conn)?;
     } else {
         let new_entry = LitBurnedSats {
-            tAddress: tAddress_.to_string(),
+            t_address: twilight_address.to_string(),
             amount: amount_delta,
         };
         diesel::insert_into(lit_burned_sats)
@@ -219,32 +219,32 @@ pub fn upsert_lit_burned_sats(tAddress_: &str, amount_delta: i64) -> Result<()> 
     Ok(())
 }
 
-pub fn upsert_addr_mappings(tAddress_: &str, qAddress_: &str) -> Result<()> {
+pub fn upsert_addr_mappings(twilight_address: &str, quis_address: &str) -> Result<()> {
     use crate::schema::addr_mappings::dsl::*;
     let mut conn = establish_connection()?;
 
     let new_entry = AddrMappings {
-        tAddress: tAddress_.to_string(),
-        qAddress: qAddress_.to_string(),
+        t_address: twilight_address.to_string(),
+        q_address: quis_address.to_string(),
     };
 
     diesel::insert_into(addr_mappings)
         .values(&new_entry)
-        .on_conflict((tAddress, qAddress)) // composite key / unique pair
+        .on_conflict((t_address, q_address)) // composite key / unique pair
         .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
 }
 
-pub fn get_taddress_for_qaddress(qAddress_: &str) -> Result<Option<String>> {
+pub fn get_taddress_for_qaddress(quis_address: &str) -> Result<Option<String>> {
     use crate::schema::addr_mappings::dsl::*;
     let mut conn = establish_connection()?;
 
     let mapping = addr_mappings
-        .filter(qAddress.eq(qAddress_))
+        .filter(q_address.eq(quis_address))
         .first::<AddrMappings>(&mut conn)
         .optional()?;
 
-    Ok(mapping.map(|m| m.tAddress))
+    Ok(mapping.map(|m| m.t_address))
 }

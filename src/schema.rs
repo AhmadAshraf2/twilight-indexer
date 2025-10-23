@@ -1,50 +1,50 @@
 diesel::table! {
-    transaction_count (tAddress) {
-        tAddress -> Text,
+    transaction_count (t_address) {
+        t_address -> Text,
         count -> BigInt,
     }
 }
 
 diesel::table! {
-    funds_moved (tAddress) {
-        tAddress -> Text,
+    funds_moved (t_address) {
+        t_address -> Text,
         amount -> BigInt,
     }
 }
 
 diesel::table! {
-    dark_burned_sats (tAddress) {
-        tAddress -> Text,
-        qAddress -> Text,
+    dark_burned_sats (t_address) {
+        t_address -> Text,
+        q_address -> Text,
         amount -> BigInt,
     }
 }
 
 diesel::table! {
-    dark_minted_sats (tAddress) {
-        tAddress -> Text,
-        qAddress -> Text,
+    dark_minted_sats (t_address) {
+        t_address -> Text,
+        q_address -> Text,
         amount -> BigInt,
     }
 }
 
 diesel::table! {
-    lit_minted_sats (tAddress) {
-        tAddress -> Text,
+    lit_minted_sats (t_address) {
+        t_address -> Text,
         amount -> BigInt,
     }
 }
 
 diesel::table! {
-    lit_burned_sats (tAddress) {
-        tAddress -> Text,
+    lit_burned_sats (t_address) {
+        t_address -> Text,
         amount -> BigInt,
     }
 }
 
 diesel::table! {
-    addr_mappings (tAddress, qAddress) {
-        tAddress -> Text,
-        qAddress -> Text,
+    addr_mappings (t_address, q_address) {
+        t_address -> Text,
+        q_address -> Text,
     }
 }   
