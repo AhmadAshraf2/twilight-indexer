@@ -2,12 +2,10 @@
 //!
 //! This module provides Rust structs for deserializing block and transaction data from
 //! Cosmos-based blockchains, as well as helpers for extracting and working with this data.
-use base64::prelude::*;
 use lazy_static::lazy_static;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 lazy_static! {
     pub static ref BLOCK_HEIGHT_FILE: String =
         std::env::var("BLOCK_HEIGHT_FILE").unwrap_or_else(|_| "height.txt".to_string());
@@ -173,43 +171,43 @@ pub struct BlockRaw {
 }
 
 impl BlockRaw {
-    pub fn get_txid(&mut self) -> Vec<String> {
-        let mut txid_vec: Vec<String> = Vec::new();
-        let txs = self.block.data.txs.clone();
-        for tx in &txs {
-            let tx_decode = BASE64_STANDARD.decode(tx).unwrap();
-            let mut sha256 = Sha256::new();
-            sha256.update(tx_decode.clone());
-            let result = sha256.finalize();
-            // println!("tx data bytes : {:?}", hex::encode(result));
-            txid_vec.push(hex::encode(result));
-        }
-        txid_vec
-    }
-    /// Gets raw byte code for all transactions
-    pub fn get_tx_byte_code(&mut self) -> Vec<String> {
-        self.block.data.txs.clone()
-    }
-    /// Gets transaction byte code with corresponding transaction hashes
-    pub fn get_tx_byte_code_with_txhash(&mut self) -> Vec<(String, String)> //byte_code, txhash
-    {
-        let mut txid_vec: Vec<(String, String)> = Vec::new();
+    // pub fn get_txid(&mut self) -> Vec<String> {
+    //     let mut txid_vec: Vec<String> = Vec::new();
+    //     let txs = self.block.data.txs.clone();
+    //     for tx in &txs {
+    //         let tx_decode = BASE64_STANDARD.decode(tx).unwrap();
+    //         let mut sha256 = Sha256::new();
+    //         sha256.update(tx_decode.clone());
+    //         let result = sha256.finalize();
+    //         // println!("tx data bytes : {:?}", hex::encode(result));
+    //         txid_vec.push(hex::encode(result));
+    //     }
+    //     txid_vec
+    // }
+    // /// Gets raw byte code for all transactions
+    // pub fn get_tx_byte_code(&mut self) -> Vec<String> {
+    //     self.block.data.txs.clone()
+    // }
+    // /// Gets transaction byte code with corresponding transaction hashes
+    // pub fn get_tx_byte_code_with_txhash(&mut self) -> Vec<(String, String)> //byte_code, txhash
+    // {
+    //     let mut txid_vec: Vec<(String, String)> = Vec::new();
 
-        let txs = self.block.data.txs.clone();
-        for tx in txs {
-            let tx_decode = BASE64_STANDARD.decode(tx.clone()).unwrap();
-            let mut sha256 = Sha256::new();
-            sha256.update(tx_decode.clone());
-            let result = sha256.finalize();
-            // println!("tx data bytes : {:?}", hex::encode(result));
-            txid_vec.push((tx, hex::encode(result)));
-        }
-        txid_vec
-    }
-    /// Gets the block hash
-    pub fn get_block_hash(&mut self) -> String {
-        self.block_id.hash.clone()
-    }
+    //     let txs = self.block.data.txs.clone();
+    //     for tx in txs {
+    //         let tx_decode = BASE64_STANDARD.decode(tx.clone()).unwrap();
+    //         let mut sha256 = Sha256::new();
+    //         sha256.update(tx_decode.clone());
+    //         let result = sha256.finalize();
+    //         // println!("tx data bytes : {:?}", hex::encode(result));
+    //         txid_vec.push((tx, hex::encode(result)));
+    //     }
+    //     txid_vec
+    // }
+    // /// Gets the block hash
+    // pub fn get_block_hash(&mut self) -> String {
+    //     self.block_id.hash.clone()
+    // }
     /// Gets the block height
     pub fn get_block_height(&mut self) -> u64 {
         self.block.header.height

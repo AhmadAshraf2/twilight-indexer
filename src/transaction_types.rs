@@ -1,13 +1,8 @@
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use cosmos_sdk_proto::cosmos::authz::v1beta1::msg_server::Msg;
-use diesel::upsert;
 use prost::Message;
 use prost_types::Any;
-
-// Import the Message trait so that decode is available for prost types
-use prost::Message as _;
 
 // Tx containers from cosmos-sdk-proto
 use cosmos_sdk_proto::cosmos::tx::v1beta1::{AuthInfo, TxBody, TxRaw};
@@ -83,10 +78,10 @@ pub enum StandardCosmosMsg {
 /// Final decoded transaction: concrete prost structs (no serde).
 #[derive(Debug)]
 pub struct DecodedTx {
-    pub body: TxBody,
-    pub auth_info: AuthInfo,
-    pub signatures: Vec<Vec<u8>>,
-    pub messages: Vec<StandardCosmosMsg>,
+    pub _body: TxBody,
+    pub _auth_info: AuthInfo,
+    pub _signatures: Vec<Vec<u8>>,
+    pub _messages: Vec<StandardCosmosMsg>,
 }
 
 /// Decode a base64-encoded TxRaw (from `block.txs[i]`) into concrete structs.
@@ -106,10 +101,10 @@ pub fn decode_tx_base64_standard(tx_b64: &str) -> Result<DecodedTx> {
     }
 
     Ok(DecodedTx {
-        body,
-        auth_info: auth,
-        signatures: tx_raw.signatures, // raw bytes; hex when printing
-        messages: msgs,
+        _body: body,
+        _auth_info: auth,
+        _signatures: tx_raw.signatures, // raw bytes; hex when printing
+        _messages: msgs,
     })
 }
 
@@ -274,17 +269,17 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
                         .expect("Failed to serialize account to bytes")
                     );
 
-                    let tAddress = match get_taddress_for_qaddress(&owner)?{
+                    let t_address = match get_taddress_for_qaddress(&owner)?{
                         Some(o) => o.clone(),
                         None => return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx)),
                     };
 
-                    if let Err(e) = upsert_addr_mappings(&tAddress, &new_qq_account) {
-                        eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", tAddress, new_qq_account, e);
+                    if let Err(e) = upsert_addr_mappings(&t_address, &new_qq_account) {
+                        eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", t_address, new_qq_account, e);
                     }
 
-                    if let Err(e) = upsert_transaction_count(&tAddress, 1) {
-                        eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", tAddress, e);
+                    if let Err(e) = upsert_transaction_count(&t_address, 1) {
+                        eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", t_address, e);
                     }
                 }
                 DecodedQQTx::Script(script) => {
@@ -328,101 +323,101 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
 }
 
 
-/// Simple printer so you can see what's inside without serde/Debug derives.
-pub fn print_tx(tx: &DecodedTx) {
-    println!("memo: {}", tx.body.memo);
-    println!("timeout_height: {}", tx.body.timeout_height);
-    if let Some(fee) = &tx.auth_info.fee {
-        println!("gas_limit: {}", fee.gas_limit);
-        for c in &fee.amount {
-            println!("fee amount: {} {}", c.amount, c.denom);
-        }
-    }
-    println!("signatures: {}", tx.signatures.len());
-    for (i, sig) in tx.signatures.iter().enumerate() {
-        println!("  sig[{i}]: {}", hex::encode(sig));
-    }
-    println!("messages: {}", tx.messages.len());
-    for (i, m) in tx.messages.iter().enumerate() {
-        match m {
-            StandardCosmosMsg::BankSend(msg) => {
-                let amts = msg.amount.iter()
-                    .map(|c| format!("{} {}", c.amount, c.denom))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!("  [{i}] bank.MsgSend {} -> {} [{}]", msg.from_address, msg.to_address, amts);
-            }
-            StandardCosmosMsg::StakingDelegate(msg) => {
-                if let Some(coin) = &msg.amount {
-                    println!("  [{i}] staking.MsgDelegate {} to {} ({} {})",
-                        msg.delegator_address, msg.validator_address, coin.amount, coin.denom);
-                } else {
-                    println!("  [{i}] staking.MsgDelegate {} to {} (no amount?)",
-                        msg.delegator_address, msg.validator_address);
-                }
-            }
-            StandardCosmosMsg::Unknown { type_url, .. } => {
-                println!("  [{i}] <UNKNOWN> {}", type_url);
-            }
-            _ => {
-                // add more pretty cases as you need
-                println!("  [{i}] {}", type_name(m));
-            }
-        }
-    }
-}
+// /// Simple printer so you can see what's inside without serde/Debug derives.
+// pub fn print_tx(tx: &DecodedTx) {
+//     println!("memo: {}", tx.body.memo);
+//     println!("timeout_height: {}", tx.body.timeout_height);
+//     if let Some(fee) = &tx.auth_info.fee {
+//         println!("gas_limit: {}", fee.gas_limit);
+//         for c in &fee.amount {
+//             println!("fee amount: {} {}", c.amount, c.denom);
+//         }
+//     }
+//     println!("signatures: {}", tx.signatures.len());
+//     for (i, sig) in tx.signatures.iter().enumerate() {
+//         println!("  sig[{i}]: {}", hex::encode(sig));
+//     }
+//     println!("messages: {}", tx.messages.len());
+//     for (i, m) in tx.messages.iter().enumerate() {
+//         match m {
+//             StandardCosmosMsg::BankSend(msg) => {
+//                 let amts = msg.amount.iter()
+//                     .map(|c| format!("{} {}", c.amount, c.denom))
+//                     .collect::<Vec<_>>()
+//                     .join(", ");
+//                 println!("  [{i}] bank.MsgSend {} -> {} [{}]", msg.from_address, msg.to_address, amts);
+//             }
+//             StandardCosmosMsg::StakingDelegate(msg) => {
+//                 if let Some(coin) = &msg.amount {
+//                     println!("  [{i}] staking.MsgDelegate {} to {} ({} {})",
+//                         msg.delegator_address, msg.validator_address, coin.amount, coin.denom);
+//                 } else {
+//                     println!("  [{i}] staking.MsgDelegate {} to {} (no amount?)",
+//                         msg.delegator_address, msg.validator_address);
+//                 }
+//             }
+//             StandardCosmosMsg::Unknown { type_url, .. } => {
+//                 println!("  [{i}] <UNKNOWN> {}", type_url);
+//             }
+//             _ => {
+//                 // add more pretty cases as you need
+//                 println!("  [{i}] {}", type_name(m));
+//             }
+//         }
+//     }
+// }
 
-fn type_name(m: &StandardCosmosMsg) -> &'static str {
-    match m {
-        // ---- Cosmos standard ----
-        StandardCosmosMsg::BankSend(_) => "cosmos.bank.v1beta1.MsgSend",
-        StandardCosmosMsg::BankMultiSend(_) => "cosmos.bank.v1beta1.MsgMultiSend",
-        StandardCosmosMsg::BankSendAuth(_) => "cosmos.bank.v1beta1.SendAuthorization",
+// fn type_name(m: &StandardCosmosMsg) -> &'static str {
+//     match m {
+//         // ---- Cosmos standard ----
+//         StandardCosmosMsg::BankSend(_) => "cosmos.bank.v1beta1.MsgSend",
+//         StandardCosmosMsg::BankMultiSend(_) => "cosmos.bank.v1beta1.MsgMultiSend",
+//         StandardCosmosMsg::BankSendAuth(_) => "cosmos.bank.v1beta1.SendAuthorization",
 
-        StandardCosmosMsg::StakingDelegate(_) => "cosmos.staking.v1beta1.MsgDelegate",
-        StandardCosmosMsg::StakingUndelegate(_) => "cosmos.staking.v1beta1.MsgUndelegate",
-        StandardCosmosMsg::StakingBeginRedelegate(_) => "cosmos.staking.v1beta1.MsgBeginRedelegate",
+//         StandardCosmosMsg::StakingDelegate(_) => "cosmos.staking.v1beta1.MsgDelegate",
+//         StandardCosmosMsg::StakingUndelegate(_) => "cosmos.staking.v1beta1.MsgUndelegate",
+//         StandardCosmosMsg::StakingBeginRedelegate(_) => "cosmos.staking.v1beta1.MsgBeginRedelegate",
 
-        StandardCosmosMsg::DistWithdrawDelegatorReward(_) => "cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
-        StandardCosmosMsg::DistWithdrawValidatorCommission(_) => "cosmos.distribution.v1beta1.MsgWithdrawValidatorCommission",
-        StandardCosmosMsg::DistSetWithdrawAddress(_) => "cosmos.distribution.v1beta1.MsgSetWithdrawAddress",
-        StandardCosmosMsg::DistFundCommunityPool(_) => "cosmos.distribution.v1beta1.MsgFundCommunityPool",
+//         StandardCosmosMsg::DistWithdrawDelegatorReward(_) => "cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
+//         StandardCosmosMsg::DistWithdrawValidatorCommission(_) => "cosmos.distribution.v1beta1.MsgWithdrawValidatorCommission",
+//         StandardCosmosMsg::DistSetWithdrawAddress(_) => "cosmos.distribution.v1beta1.MsgSetWithdrawAddress",
+//         StandardCosmosMsg::DistFundCommunityPool(_) => "cosmos.distribution.v1beta1.MsgFundCommunityPool",
 
-        StandardCosmosMsg::GovSubmitProposal(_) => "cosmos.gov.v1beta1.MsgSubmitProposal",
-        StandardCosmosMsg::GovDeposit(_) => "cosmos.gov.v1beta1.MsgDeposit",
-        StandardCosmosMsg::GovVote(_) => "cosmos.gov.v1beta1.MsgVote",
-        StandardCosmosMsg::GovVoteWeighted(_) => "cosmos.gov.v1beta1.MsgVoteWeighted",
+//         StandardCosmosMsg::GovSubmitProposal(_) => "cosmos.gov.v1beta1.MsgSubmitProposal",
+//         StandardCosmosMsg::GovDeposit(_) => "cosmos.gov.v1beta1.MsgDeposit",
+//         StandardCosmosMsg::GovVote(_) => "cosmos.gov.v1beta1.MsgVote",
+//         StandardCosmosMsg::GovVoteWeighted(_) => "cosmos.gov.v1beta1.MsgVoteWeighted",
 
-        // ---- Twilight NYKS bridge ----
-        StandardCosmosMsg::NyksConfirmBtcDeposit(_) => "twilightproject.nyks.bridge.MsgConfirmBtcDeposit",
-        StandardCosmosMsg::NyksRegisterBtcDepositAddress(_) => "twilightproject.nyks.bridge.MsgRegisterBtcDepositAddress",
-        StandardCosmosMsg::NyksRegisterReserveAddress(_) => "twilightproject.nyks.bridge.MsgRegisterReserveAddress",
-        StandardCosmosMsg::NyksBootstrapFragment(_) => "twilightproject.nyks.bridge.MsgBootstrapFragment",
+//         // ---- Twilight NYKS bridge ----
+//         StandardCosmosMsg::NyksConfirmBtcDeposit(_) => "twilightproject.nyks.bridge.MsgConfirmBtcDeposit",
+//         StandardCosmosMsg::NyksRegisterBtcDepositAddress(_) => "twilightproject.nyks.bridge.MsgRegisterBtcDepositAddress",
+//         StandardCosmosMsg::NyksRegisterReserveAddress(_) => "twilightproject.nyks.bridge.MsgRegisterReserveAddress",
+//         StandardCosmosMsg::NyksBootstrapFragment(_) => "twilightproject.nyks.bridge.MsgBootstrapFragment",
 
-        StandardCosmosMsg::NyksWithdrawBtcRequest(_) => "twilightproject.nyks.bridge.MsgWithdrawBtcRequest",
-        StandardCosmosMsg::NyksWithdrawTxSigned(_) => "twilightproject.nyks.bridge.MsgWithdrawTxSigned",
-        StandardCosmosMsg::NyksWithdrawTxFinal(_) => "twilightproject.nyks.bridge.MsgWithdrawTxFinal",
-        StandardCosmosMsg::NyksConfirmBtcWithdraw(_) => "twilightproject.nyks.bridge.MsgConfirmBtcWithdraw",
+//         StandardCosmosMsg::NyksWithdrawBtcRequest(_) => "twilightproject.nyks.bridge.MsgWithdrawBtcRequest",
+//         StandardCosmosMsg::NyksWithdrawTxSigned(_) => "twilightproject.nyks.bridge.MsgWithdrawTxSigned",
+//         StandardCosmosMsg::NyksWithdrawTxFinal(_) => "twilightproject.nyks.bridge.MsgWithdrawTxFinal",
+//         StandardCosmosMsg::NyksConfirmBtcWithdraw(_) => "twilightproject.nyks.bridge.MsgConfirmBtcWithdraw",
 
-        StandardCosmosMsg::NyksProposeSweepAddress(_) => "twilightproject.nyks.bridge.MsgProposeSweepAddress",
-        StandardCosmosMsg::NyksUnsignedTxSweep(_) => "twilightproject.nyks.bridge.MsgUnsignedTxSweep",
-        StandardCosmosMsg::NyksUnsignedTxRefund(_) => "twilightproject.nyks.bridge.MsgUnsignedTxRefund",
+//         StandardCosmosMsg::NyksProposeSweepAddress(_) => "twilightproject.nyks.bridge.MsgProposeSweepAddress",
+//         StandardCosmosMsg::NyksUnsignedTxSweep(_) => "twilightproject.nyks.bridge.MsgUnsignedTxSweep",
+//         StandardCosmosMsg::NyksUnsignedTxRefund(_) => "twilightproject.nyks.bridge.MsgUnsignedTxRefund",
 
-        StandardCosmosMsg::NyksSignRefund(_) => "twilightproject.nyks.bridge.MsgSignRefund",
-        StandardCosmosMsg::NyksSignSweep(_) => "twilightproject.nyks.bridge.MsgSignSweep",
+//         StandardCosmosMsg::NyksSignRefund(_) => "twilightproject.nyks.bridge.MsgSignRefund",
+//         StandardCosmosMsg::NyksSignSweep(_) => "twilightproject.nyks.bridge.MsgSignSweep",
 
-        StandardCosmosMsg::NyksBroadcastTxRefund(_) => "twilightproject.nyks.bridge.MsgBroadcastTxRefund",
-        StandardCosmosMsg::NyksBroadcastTxSweep(_) => "twilightproject.nyks.bridge.MsgBroadcastTxSweep",
+//         StandardCosmosMsg::NyksBroadcastTxRefund(_) => "twilightproject.nyks.bridge.MsgBroadcastTxRefund",
+//         StandardCosmosMsg::NyksBroadcastTxSweep(_) => "twilightproject.nyks.bridge.MsgBroadcastTxSweep",
 
-        StandardCosmosMsg::NyksSweepProposal(_) => "twilightproject.nyks.bridge.MsgSweepProposal",
+//         StandardCosmosMsg::NyksSweepProposal(_) => "twilightproject.nyks.bridge.MsgSweepProposal",
 
-        StandardCosmosMsg::NyksZkosMsgTransferTx(_) => "twilightproject.nyks.zkos.MsgTransferTx",
-        StandardCosmosMsg::NyksZkosMsgMintBurnTradingBtc(_) => "twilightproject.nyks.zkos.MsgMintBurnTradingBtc",
+//         StandardCosmosMsg::NyksZkosMsgTransferTx(_) => "twilightproject.nyks.zkos.MsgTransferTx",
+//         StandardCosmosMsg::NyksZkosMsgMintBurnTradingBtc(_) => "twilightproject.nyks.zkos.MsgMintBurnTradingBtc",
 
-        // ---- Fallback ----
-        StandardCosmosMsg::Unknown { .. } => "<UNKNOWN>",
-    }
-}
+//         // ---- Fallback ----
+//         StandardCosmosMsg::Unknown { .. } => "<UNKNOWN>",
+//     }
+// }
 
 
 fn ty(t: &str, want: &str) -> bool {

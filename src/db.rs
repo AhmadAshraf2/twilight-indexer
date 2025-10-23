@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use crate::schema::{dark_burned_sats, dark_minted_sats, funds_moved, transaction_count, lit_burned_sats, lit_minted_sats, addr_mappings};
 use anyhow::Result;
-use diesel::{prelude::*, PgConnection};
+use diesel::PgConnection;
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = transaction_count)]
@@ -72,7 +72,7 @@ pub fn upsert_transaction_count(twilight_address: &str, delta: i64) -> Result<()
     let mut conn = establish_connection()?;
 
     // Check if exists
-    if let Ok(existing) = transaction_count
+    if let Ok(_existing) = transaction_count
         .filter(t_address.eq(twilight_address))
         .first::<(String, i64)>(&mut conn)
     {

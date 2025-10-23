@@ -1,6 +1,4 @@
 use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine as _;
 use hex;
 
 use transaction::{Transaction, TransactionData, TransferTransaction, ScriptTransaction, Message};
