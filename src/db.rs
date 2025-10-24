@@ -1,6 +1,9 @@
-use diesel::prelude::*;
-use crate::schema::{dark_burned_sats, dark_minted_sats, funds_moved, transaction_count, lit_burned_sats, lit_minted_sats, addr_mappings};
+use crate::schema::{
+    addr_mappings, dark_burned_sats, dark_minted_sats, funds_moved, lit_burned_sats,
+    lit_minted_sats, transaction_count,
+};
 use anyhow::Result;
+use diesel::prelude::*;
 use diesel::PgConnection;
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
@@ -25,7 +28,6 @@ pub struct DarkBurnedSats {
     pub amount: i64,
 }
 
-
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = dark_minted_sats)]
 pub struct DarkMintedSats {
@@ -48,7 +50,6 @@ pub struct LitMintedSats {
     pub amount: i64,
 }
 
-
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = addr_mappings)]
 pub struct AddrMappings {
@@ -56,14 +57,23 @@ pub struct AddrMappings {
     pub q_address: String,
 }
 
-
 fn establish_connection() -> Result<PgConnection> {
     // Usually stored in .env as DATABASE_URL=postgres://user:pass@localhost/stats
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let conn = PgConnection::establish(&database_url)?;
     Ok(conn)
+}
+
+pub fn run_migrations() -> Result<()> {
+    use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+    // Embed migrations from the migrations/ directory
+    const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
+
+    let mut conn = establish_connection()?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(())
 }
 /// Add a transaction count (increment existing or insert new)
 pub fn upsert_transaction_count(twilight_address: &str, delta: i64) -> Result<()> {
@@ -119,7 +129,11 @@ pub fn upsert_funds_moved(twilight_address: &str, amount_delta: i64) -> Result<(
     Ok(())
 }
 
-pub fn upsert_dark_burned_sats(twilight_address: &str, quis_address: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_dark_burned_sats(
+    twilight_address: &str,
+    quis_address: &str,
+    amount_delta: i64,
+) -> Result<()> {
     use crate::schema::dark_burned_sats::dsl::*;
 
     let mut conn = establish_connection()?;
@@ -144,7 +158,11 @@ pub fn upsert_dark_burned_sats(twilight_address: &str, quis_address: &str, amoun
     Ok(())
 }
 
-pub fn upsert_dark_minted_sats(twilight_address: &str, quis_address: &str, amount_delta: i64) -> Result<()> {
+pub fn upsert_dark_minted_sats(
+    twilight_address: &str,
+    quis_address: &str,
+    amount_delta: i64,
+) -> Result<()> {
     use crate::schema::dark_minted_sats::dsl::*;
 
     let mut conn = establish_connection()?;
@@ -169,7 +187,6 @@ pub fn upsert_dark_minted_sats(twilight_address: &str, quis_address: &str, amoun
     Ok(())
 }
 
-
 pub fn upsert_lit_minted_sats(twilight_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::lit_minted_sats::dsl::*;
 
@@ -193,7 +210,6 @@ pub fn upsert_lit_minted_sats(twilight_address: &str, amount_delta: i64) -> Resu
 
     Ok(())
 }
-
 
 pub fn upsert_lit_burned_sats(twilight_address: &str, amount_delta: i64) -> Result<()> {
     use crate::schema::lit_burned_sats::dsl::*;
