@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use hex;
+use crate::db::insert_qq_tx;
 
 use transaction::{Transaction, TransactionData, TransferTransaction, ScriptTransaction, Message};
 /// Decode a string that may be base64 or hex into bytes.
@@ -40,10 +41,14 @@ pub enum DecodedQQTx {
     Message(Message),
 }
 
-pub fn decode_qq_transaction(tx_byte_code: &str) -> Result<DecodedQQTx> {
+pub fn decode_qq_transaction(tx_byte_code: &str, block_height: u64) -> Result<DecodedQQTx> {
     // assumes you already have this helper that deserializes the *full* `transaction::Transaction`
     // (bincode or postcard as you implemented earlier)
     let t = decode_transaction(tx_byte_code)?;
+    let ts_json = serde_json::to_string_pretty(&t)
+        .context("Failed to serialize Transaction to JSON")?;
+
+    insert_qq_tx(&ts_json, block_height).context("Failed to insert QQ transaction into database")?;
 
     Ok(match t.tx {
         TransactionData::TransactionTransfer(tx) => DecodedQQTx::Transfer(tx),

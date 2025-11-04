@@ -24,6 +24,8 @@ use crate::db::*;
 use crate::quis_quis_tx::decode_qq_transaction;
 use crate::quis_quis_tx::DecodedQQTx;
 
+// use transaction::
+
 /// Typed envelope for standard Cosmos messages (no Debug/serde derives to avoid trait issues).
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -85,7 +87,7 @@ pub struct DecodedTx {
 }
 
 /// Decode a base64-encoded TxRaw (from `block.txs[i]`) into concrete structs.
-pub fn decode_tx_base64_standard(tx_b64: &str) -> Result<DecodedTx> {
+pub fn decode_tx_base64_standard(tx_b64: &str, block_height: u64) -> Result<DecodedTx> {
     // 1) base64 → bytes → TxRaw
     let raw_bytes = B64.decode(tx_b64.trim())?;
     let tx_raw = TxRaw::decode(raw_bytes.as_slice())?;
@@ -97,8 +99,22 @@ pub fn decode_tx_base64_standard(tx_b64: &str) -> Result<DecodedTx> {
     // 3) Messages (Any) → typed messages
     let mut msgs = Vec::<StandardCosmosMsg>::new();
     for any in &body.messages {
-        msgs.push(decode_standard_any(any)?);
+        msgs.push(decode_standard_any(any, block_height)?);
     }
+
+    // match auth.fee {
+    //     Some(fee) =>{
+    //         if let Err(e) = insert_gas_used_nyks(
+    //             tx,
+    //             fee.amount[0].amount.parse::<i64>().expect("Failed to parse gas amount string to i64"),
+    //             &fee.amount[0].denom,
+    //             block_height,
+    //         ) {
+    //             eprintln!("⚠️ Failed to update gas_used_nyks for {}: {:?}", &body.signer_infos[0].public_key.as_ref().unwrap().to_string(), e);
+    //         }   
+    //     },
+    //     None => panic!("fee must be present"),
+    // };
 
     Ok(DecodedTx {
         _body: body,
@@ -108,7 +124,7 @@ pub fn decode_tx_base64_standard(tx_b64: &str) -> Result<DecodedTx> {
     })
 }
 
-pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
+pub fn decode_standard_any(any: &Any, block_height: u64) -> Result<StandardCosmosMsg> {
     let t = any.type_url.as_str();
     let bytes = any.value.as_slice();
 
@@ -116,13 +132,15 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
     if ty(t, "cosmos.bank.v1beta1.MsgSend") {
         let tx = MsgSend::decode(bytes)?;
         
-        if let Err(e) = upsert_transaction_count(&tx.from_address, 1) {
+        if let Err(e) = insert_transaction_count(&tx.from_address, block_height) {
             eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", tx.from_address, e);
         }
 
-        let amount = tx.amount.iter().map(|c| c.amount.parse::<i64>().unwrap_or(0)).sum();
-        if let Err(e) = upsert_funds_moved(&tx.from_address, amount) {
-            eprintln!("⚠️ Failed to update funds_moved for {}: {:?}", tx.from_address, e);
+        for coin in tx.amount.clone() {
+            let amount: i64 = coin.amount.parse::<i64>().expect("Failed to parse amount string to i64");
+            if let Err(e) = insert_funds_moved(&tx.to_address, amount, &coin.denom, block_height) {
+                eprintln!("⚠️ Failed to update funds_moved for {}: {:?}", tx.to_address, e);
+            }
         }
         return Ok(StandardCosmosMsg::BankSend(tx));
     }
@@ -185,7 +203,7 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
     if ty(t, "twilightproject.nyks.bridge.MsgConfirmBtcDeposit") {
         let tx = nyksBridge::MsgConfirmBtcDeposit::decode(bytes)?;
 
-        if let Err(e) = upsert_lit_minted_sats(&tx.twilight_deposit_address, tx.deposit_amount as i64) {
+        if let Err(e) = insert_lit_minted_sats(&tx.twilight_deposit_address, tx.deposit_amount as i64, block_height) {
             eprintln!("⚠️ Failed to update transaction for {}: {:?}", tx.twilight_deposit_address, e);
         }
         
@@ -203,7 +221,7 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
 
     if ty(t, "twilightproject.nyks.bridge.MsgWithdrawBtcRequest") {
         let tx = nyksBridge::MsgWithdrawBtcRequest::decode(bytes)?;
-        if let Err(e) = upsert_lit_burned_sats(&tx.twilight_address, tx.withdraw_amount as i64) {
+        if let Err(e) = insert_lit_burned_sats(&tx.twilight_address, tx.withdraw_amount as i64, block_height) {
             eprintln!("⚠️ Failed to update transaction for {}: {:?}", tx.twilight_address, e);
         }
         return Ok(StandardCosmosMsg::NyksWithdrawBtcRequest(tx));
@@ -247,18 +265,22 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
 
     if ty(t, "twilightproject.nyks.zkos.MsgTransferTx") {
         let cosmos_tx = nyksZkos::MsgTransferTx::decode(bytes)?;
-        let decoded = decode_qq_transaction(&cosmos_tx.tx_byte_code)?;
+        let decoded = decode_qq_transaction(&cosmos_tx.tx_byte_code, block_height)?;
         match decoded {
                 DecodedQQTx::Transfer(tx) => {
+                    eprint!("Got transfer tx: {:?}", tx);
                     let inputs = tx.get_input_values();
                     let outputs = tx.get_output_values();
-                    if inputs.is_empty() || outputs.is_empty() {
+                    if inputs.is_empty() || outputs.is_empty() { 
                         eprintln!("⚠️ TransferTransaction has no inputs or outputs");
                         return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
                     }
                     let owner = match inputs[0].as_owner_address() {
                         Some(o) => o.clone(),
-                        None => return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx)),
+                        None => {
+                            eprintln!("⚠️ Failed to get owner address from input");
+                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                        },
                     };
                     let new_qq_account = outputs[0]
                         .to_quisquis_account()
@@ -274,16 +296,56 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
                         None => return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx)),
                     };
 
-                    if let Err(e) = upsert_addr_mappings(&t_address, &new_qq_account) {
+                    if let Err(e) = insert_addr_mappings(&t_address, &new_qq_account, block_height) {
                         eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", t_address, new_qq_account, e);
                     }
 
-                    if let Err(e) = upsert_transaction_count(&t_address, 1) {
+                    if let Err(e) = insert_transaction_count(&t_address, block_height) {
                         eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", t_address, e);
                     }
+
+                    if inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo {
+                        if let Err(e) = insert_trading_tx(&new_qq_account, &owner, block_height){
+                            eprintln!("⚠️ Failed to update trading tx for {}: {:?}", new_qq_account, e);
+                        }
+                    }
                 }
-                DecodedQQTx::Script(script) => {
-                    println!("Got script tx: {:?}", script);
+                DecodedQQTx::Script(script_tx) => {
+                    println!("Got script tx: {:?}", script_tx);
+                    let inputs = script_tx.get_input_values();
+                    let outputs = script_tx.get_output_values();
+                    if inputs.is_empty() || outputs.is_empty() { 
+                        eprintln!("⚠️ TransferTransaction has no inputs or outputs");
+                        return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
+                    }
+                    let owner = match inputs[0].as_owner_address() {
+                        Some(o) => o.clone(),
+                        None => {
+                            eprintln!("⚠️ Failed to get owner address from input");
+                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                        },
+                    };
+                    let new_qq_account = outputs[0]
+                        .to_quisquis_account()
+                        .expect("Failed to convert to quisquis account"
+                    );
+                    let new_qq_account = hex::encode(
+                    bincode::serialize(&new_qq_account)
+                        .expect("Failed to serialize account to bytes")
+                    );
+
+                    if inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo {
+                        if let Err(e) = insert_order_open_tx(&new_qq_account, &owner, block_height){
+                            eprintln!("⚠️ Failed to update close order for {}: {:?}", new_qq_account, e);
+                        }
+                    }
+
+                    if inputs[0].in_type == zkvm::IOType::Memo && outputs[0].out_type == zkvm::IOType::Coin {
+                        if let Err(e) = insert_order_close_tx(&new_qq_account, &owner, block_height){
+                            eprintln!("⚠️ Failed to update open order for {}: {:?}", new_qq_account, e);
+                        }
+                    }
+                    
                 }
                 DecodedQQTx::Message(msg) => {
                     println!("Got message tx: {:?}", msg);
@@ -295,20 +357,20 @@ pub fn decode_standard_any(any: &Any) -> Result<StandardCosmosMsg> {
     if ty(t, "twilightproject.nyks.zkos.MsgMintBurnTradingBtc") {
         let tx = nyksZkos::MsgMintBurnTradingBtc::decode(bytes)?;
         if tx.mint_or_burn == true {
-            if let Err(e) = upsert_dark_minted_sats(&tx.twilight_address, &tx.qq_account, tx.btc_value as i64) {
+            if let Err(e) = insert_dark_minted_sats(&tx.twilight_address, &tx.qq_account, tx.btc_value as i64, block_height) {
                 eprintln!("⚠️ Failed to update dark minted sats for {}: {:?}", tx.twilight_address, e);
             }
-            if let Err(e) = upsert_addr_mappings(&tx.twilight_address, &tx.qq_account) {
+            if let Err(e) = insert_addr_mappings(&tx.twilight_address, &tx.qq_account, block_height) {
                 eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", tx.twilight_address, tx.qq_account, e);
             }
         }
         else if tx.mint_or_burn == false {
-            if let Err(e) = upsert_dark_burned_sats(&tx.twilight_address, &tx.qq_account, tx.btc_value as i64) {
+            if let Err(e) = insert_dark_burned_sats(&tx.twilight_address, &tx.qq_account, tx.btc_value as i64, block_height) {
                 eprintln!("⚠️ Failed to update dark burned sats for {}: {:?}", tx.twilight_address, e);
             }
         }
 
-        if let Err(e) = upsert_transaction_count(&tx.twilight_address, 1) {
+        if let Err(e) = insert_transaction_count(&tx.twilight_address, block_height) {
             eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", tx.twilight_address, e);
         }
 

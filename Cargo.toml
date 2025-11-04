@@ -29,11 +29,12 @@ prost = "0.13"
 prost-types = "0.13"
 cosmos-sdk-proto = "0.23"
 
-diesel = { version = "2", features = ["postgres"] }
+diesel = { version = "2", features = ["postgres", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
 diesel_migrations = "2"
 postgres = "0.19" # sync client, used only to create the DB if missing
 transaction = { git = "https://github.com/twilight-project/zkos-rust", package = "transaction", branch = "develop" }
-
+zkvm = {git = "https://github.com/twilight-project/zkos-rust",package = "zkvm", branch = "develop"}
 [build-dependencies]
 prost-build = "0.13"
 tonic-build = { version = "0.12", default-features = false, optional = true } 

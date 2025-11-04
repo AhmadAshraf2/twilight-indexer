@@ -12,7 +12,7 @@
 //! ```
 //! use twilight_indexer::pubsub_chain::subscribe_block;
 //! ```
-use crate::block_types::BlockRaw;
+use crate::{block_types::BlockRaw, schema::transactions::block};
 
 use lazy_static::lazy_static;
 use std::time;
@@ -54,7 +54,7 @@ pub fn subscribe_block(){
                 Ok(block_raw) => {
                     println!("Fetched Block at height: {}", block_height);
                     for tx in &block_raw.block.data.txs {
-                        let _decoded_tx = crate::transaction_types::decode_tx_base64_standard(tx);
+                        let _decoded_tx = crate::transaction_types::decode_tx_base64_standard(tx, block_height);
                     }
                     block_height += 1;
                 }

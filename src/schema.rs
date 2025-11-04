@@ -1,50 +1,111 @@
 diesel::table! {
-    transaction_count (t_address) {
+    transactions (t_address, created_at, block) {
         t_address -> Text,
-        count -> BigInt,
+        block -> BigInt,
+        created_at -> Timestamp,
+
     }
 }
 
 diesel::table! {
-    funds_moved (t_address) {
+    funds_moved (t_address, created_at, denom, amount, block) {
         t_address -> Text,
         amount -> BigInt,
+        denom -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    dark_burned_sats (t_address) {
+    dark_burned_sats (t_address, q_address, created_at) {
         t_address -> Text,
         q_address -> Text,
         amount -> BigInt,
+        block -> BigInt,
+        created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    dark_minted_sats (t_address) {
+    dark_minted_sats (t_address, q_address, created_at) {
         t_address -> Text,
         q_address -> Text,
         amount -> BigInt,
+        block -> BigInt,
+
+        created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    lit_minted_sats (t_address) {
+    lit_minted_sats (t_address, created_at) {
         t_address -> Text,
         amount -> BigInt,
+        block -> BigInt,
+        created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    lit_burned_sats (t_address) {
+    lit_burned_sats (t_address, created_at) {
         t_address -> Text,
         amount -> BigInt,
+        block -> BigInt,
+        created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    addr_mappings (t_address, q_address) {
+    addr_mappings (t_address, q_address, created_at) {
         t_address -> Text,
         q_address -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
     }
-}   
+}
+
+diesel::table! {
+    gas_used_nyks (t_address, block, created_at, gas_amount) {
+        t_address -> Text,
+        gas_amount -> BigInt,
+        denom -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    qq_tx (tx, block, created_at, block) {
+        tx -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    trading_tx (to_address, from_address, block) {
+        to_address -> Text,
+        from_address -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    order_open_tx (to_address, from_address, block) {
+        to_address -> Text,
+        from_address -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    order_close_tx (to_address, from_address, block) {
+        to_address -> Text,
+        from_address -> Text,
+        block -> BigInt,
+        created_at -> Timestamp,
+    }
+}

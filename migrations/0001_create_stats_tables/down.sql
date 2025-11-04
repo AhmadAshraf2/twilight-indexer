@@ -5,3 +5,8 @@ Drop TABLE IF EXISTS dark_minted_sats;
 Drop TABLE IF EXISTS lit_minted_sats;
 Drop TABLE IF EXISTS lit_burned_sats;
 Drop TABLE IF EXISTS addr_mappings;
+DROP TABLE IF EXISTS gas_used_nyks;
+Drop TABLE IF EXISTS qq_tx;
+Drop TABLE IF EXISTS trading_tx;
+DROP TABLE IF EXISTS order_open_tx;
+DROP TABLE IF EXISTS order_close_tx;
