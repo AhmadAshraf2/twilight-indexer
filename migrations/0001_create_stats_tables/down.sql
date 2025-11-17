@@ -10,3 +10,4 @@ Drop TABLE IF EXISTS qq_tx;
 Drop TABLE IF EXISTS trading_tx;
 DROP TABLE IF EXISTS order_open_tx;
 DROP TABLE IF EXISTS order_close_tx;
+DROP INDEX IF EXISTS idx_addr_mappings_t_q_unique;
