@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     t_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    primary key( t_address, block));
+    primary key (t_address, block);
 
 CREATE TABLE IF NOT EXISTS funds_moved (
     t_address TEXT,
