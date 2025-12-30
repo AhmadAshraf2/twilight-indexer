@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     t_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    primary key( t_address, block));
 
 CREATE TABLE IF NOT EXISTS funds_moved (
     t_address TEXT,
@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS addr_mappings (
     t_address TEXT NOT NULL,
     q_address TEXT NOT NULL,
     block BIGINT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (t_address, q_address)
+    
 );
 
 CREATE TABLE IF NOT EXISTS gas_used_nyks (
