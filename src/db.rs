@@ -125,6 +125,8 @@ pub fn insert_transaction_count(twilight_address: &str, block_height: u64) -> Re
 
     diesel::insert_into(transactions)
         .values(&new_entry)
+        .on_conflict((t_address, block))
+        .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
@@ -132,6 +134,7 @@ pub fn insert_transaction_count(twilight_address: &str, block_height: u64) -> Re
 
 /// Add funds moved (increment existing or insert new)
 pub fn insert_funds_moved(twilight_address: &str, amount_delta: i64, denom_str: &str, block_height: u64) -> Result<()> {
+    use crate::schema::funds_moved::dsl::*;
     let mut conn = establish_connection()?;
 
     let new_entry = FundsMoved {
@@ -141,8 +144,11 @@ pub fn insert_funds_moved(twilight_address: &str, amount_delta: i64, denom_str: 
         block: block_height as i64,
     };
 
-    diesel::insert_into(funds_moved::table)
+    diesel::insert_into(funds_moved)
         .values(&new_entry)
+        .on_conflict((t_address, denom, block))
+        .do_update()
+        .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
 
     Ok(())
@@ -160,6 +166,9 @@ pub fn insert_dark_burned_sats(twilight_address: &str, quis_address: &str, amoun
     };
     diesel::insert_into(dark_burned_sats)
         .values(&new_entry)
+        .on_conflict((t_address, q_address, block))
+        .do_update()
+        .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
 
     Ok(())
@@ -177,6 +186,9 @@ pub fn insert_dark_minted_sats(twilight_address: &str, quis_address: &str, amoun
     };
     diesel::insert_into(dark_minted_sats)
         .values(&new_entry)
+        .on_conflict((t_address, q_address, block))
+        .do_update()
+        .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
 
     Ok(())
@@ -194,6 +206,9 @@ pub fn insert_lit_minted_sats(twilight_address: &str, amount_delta: i64, block_h
     };
     diesel::insert_into(lit_minted_sats)
         .values(&new_entry)
+        .on_conflict((t_address, block))
+        .do_update()
+        .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
 
     Ok(())
@@ -211,6 +226,9 @@ pub fn insert_lit_burned_sats(twilight_address: &str, amount_delta: i64, block_h
     };
     diesel::insert_into(lit_burned_sats)
         .values(&new_entry)
+        .on_conflict((t_address, block))
+        .do_update()
+        .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
 
     Ok(())
@@ -260,6 +278,9 @@ pub fn insert_gas_used(addr: &str, gas: i64, denom_str: &str, height: i64) -> Re
     };
     diesel::insert_into(gas_used_nyks)
         .values(&new_entry)
+        .on_conflict((t_address, denom, block))
+        .do_update()
+        .set(gas_amount.eq(gas_amount + gas))
         .execute(&mut conn)?;
 
     Ok(())
@@ -275,6 +296,8 @@ pub fn insert_qq_tx(tx_str: &str, block_height: u64) -> Result<()> {
     };
     diesel::insert_into(qq_tx)
         .values(&new_entry)
+        .on_conflict((tx, block))
+        .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
@@ -291,6 +314,8 @@ pub fn insert_trading_tx(to_addr: &str, from_addr: &str, block_height: u64) -> R
     };
     diesel::insert_into(trading_tx)
         .values(&new_entry)
+        .on_conflict((to_address, from_address, block))
+        .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
@@ -307,6 +332,8 @@ pub fn insert_order_open_tx(to_addr: &str, from_addr: &str, block_height: u64) -
     };
     diesel::insert_into(order_open_tx)
         .values(&new_entry)
+        .on_conflict((to_address, from_address, block))
+        .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
@@ -323,6 +350,8 @@ pub fn insert_order_close_tx(to_addr: &str, from_addr: &str, block_height: u64) 
     };
     diesel::insert_into(order_close_tx)
         .values(&new_entry)
+        .on_conflict((to_address, from_address, block))
+        .do_nothing()
         .execute(&mut conn)?;
 
     Ok(())
