@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE funds_moved (
+CREATE TABLE IF NOT EXISTS funds_moved (
     t_address TEXT,
     amount BIGINT NOT NULL DEFAULT 0,
     denom TEXT NOT NULL,
@@ -16,41 +16,40 @@ CREATE TABLE funds_moved (
 
 CREATE TABLE IF NOT EXISTS dark_burned_sats (
     t_address TEXT PRIMARY KEY,
-    q_address  TEXT NOT NULL DEFAULT 0,
-    amount  BIGINT NOT NULL DEFAULT 0,
+    q_address TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL DEFAULT 0,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dark_minted_sats (
     t_address TEXT PRIMARY KEY,
-    q_address  TEXT NOT NULL DEFAULT 0,
-    amount  BIGINT NOT NULL DEFAULT 0,
+    q_address TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL DEFAULT 0,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS lit_minted_sats (
     t_address TEXT PRIMARY KEY,
-    amount  BIGINT NOT NULL DEFAULT 0,
+    amount BIGINT NOT NULL DEFAULT 0,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS lit_burned_sats (
     t_address TEXT PRIMARY KEY,
-    amount  BIGINT NOT NULL DEFAULT 0,
+    amount BIGINT NOT NULL DEFAULT 0,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS addr_mappings (
     t_address TEXT NOT NULL,
-    q_address  TEXT NOT NULL,
+    q_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
 
 CREATE TABLE IF NOT EXISTS gas_used_nyks (
     t_address TEXT NOT NULL,
@@ -66,27 +65,31 @@ CREATE TABLE IF NOT EXISTS qq_tx (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Fixed: Added comma after to_address
 CREATE TABLE IF NOT EXISTS trading_tx (
-    to_address TEXT NOT NULL
+    to_address TEXT NOT NULL,
     from_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Fixed: Added comma after to_address
 CREATE TABLE IF NOT EXISTS order_open_tx (
-    to_address TEXT NOT NULL
+    to_address TEXT NOT NULL,
     from_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Fixed: Added comma after to_address
 CREATE TABLE IF NOT EXISTS order_close_tx (
-    to_address TEXT NOT NULL
+    to_address TEXT NOT NULL,
     from_address TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Remove duplicates from addr_mappings before adding unique constraint
 WITH ranked AS (
     SELECT ctid,
            ROW_NUMBER() OVER (PARTITION BY t_address, q_address ORDER BY t_address) AS rn
