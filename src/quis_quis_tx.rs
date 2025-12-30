@@ -12,7 +12,7 @@ fn decode_str_to_bytes(s: &str) -> Result<Vec<u8>> {
 
 /// Deserialize into the *full* Transaction (struct with tx_type + tx data).
 /// Tries bincode first; optionally falls back to postcard.
-fn decode_transaction(tx_byte_code: &str) -> Result<Transaction> {
+pub fn decode_transaction(tx_byte_code: &str) -> Result<Transaction> {
     let bytes = decode_str_to_bytes(tx_byte_code)?;
 
     // 1) bincode → Transaction
