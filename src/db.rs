@@ -327,3 +327,14 @@ pub fn insert_order_close_tx(to_addr: &str, from_addr: &str, block_height: u64) 
 
     Ok(())
 }
+
+pub fn run_migrations() -> Result<()> {
+    use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+    // Embed migrations from the migrations/ directory
+    const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
+
+    let mut conn = establish_connection()?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(())
+}
