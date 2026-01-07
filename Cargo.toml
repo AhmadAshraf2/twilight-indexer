@@ -31,6 +31,8 @@ cosmos-sdk-proto = "0.23"
 actix-cors = "0.7"
 actix-web = "4.4"
 actix-rt = "2.9"
+utoipa = { version = "5", features = ["actix_extras"] }
+utoipa-swagger-ui = { version = "8", features = ["actix-web"] }
 
 diesel = { version = "2", features = ["postgres", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }

@@ -367,3 +367,77 @@ pub fn run_migrations() -> Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(())
 }
+
+// Query functions for API endpoints
+
+pub fn get_transactions_by_address(addr: &str) -> Result<Vec<Transactions>> {
+    use crate::schema::transactions::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = transactions
+        .filter(t_address.eq(addr))
+        .select((t_address, block))
+        .load::<Transactions>(&mut conn)?;
+
+    Ok(results)
+}
+
+pub fn get_funds_moved_by_address(addr: &str) -> Result<Vec<FundsMoved>> {
+    use crate::schema::funds_moved::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = funds_moved
+        .filter(t_address.eq(addr))
+        .select((t_address, amount, denom, block))
+        .load::<FundsMoved>(&mut conn)?;
+
+    Ok(results)
+}
+
+pub fn get_dark_burned_sats_by_address(addr: &str) -> Result<Vec<DarkBurnedSats>> {
+    use crate::schema::dark_burned_sats::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = dark_burned_sats
+        .filter(t_address.eq(addr))
+        .select((t_address, q_address, amount, block))
+        .load::<DarkBurnedSats>(&mut conn)?;
+
+    Ok(results)
+}
+
+pub fn get_dark_minted_sats_by_address(addr: &str) -> Result<Vec<DarkMintedSats>> {
+    use crate::schema::dark_minted_sats::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = dark_minted_sats
+        .filter(t_address.eq(addr))
+        .select((t_address, q_address, amount, block))
+        .load::<DarkMintedSats>(&mut conn)?;
+
+    Ok(results)
+}
+
+pub fn get_lit_minted_sats_by_address(addr: &str) -> Result<Vec<LitMintedSats>> {
+    use crate::schema::lit_minted_sats::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = lit_minted_sats
+        .filter(t_address.eq(addr))
+        .select((t_address, amount, block))
+        .load::<LitMintedSats>(&mut conn)?;
+
+    Ok(results)
+}
+
+pub fn get_lit_burned_sats_by_address(addr: &str) -> Result<Vec<LitBurnedSats>> {
+    use crate::schema::lit_burned_sats::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = lit_burned_sats
+        .filter(t_address.eq(addr))
+        .select((t_address, amount, block))
+        .load::<LitBurnedSats>(&mut conn)?;
+
+    Ok(results)
+}
