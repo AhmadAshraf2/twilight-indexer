@@ -1,14 +1,13 @@
 diesel::table! {
-    transactions (t_address, created_at, block) {
+    transactions (t_address, block) {
         t_address -> Text,
         block -> BigInt,
         created_at -> Timestamp,
-
     }
 }
 
 diesel::table! {
-    funds_moved (t_address, created_at, denom, amount, block) {
+    funds_moved (t_address, denom, block) {
         t_address -> Text,
         amount -> BigInt,
         denom -> Text,
@@ -18,7 +17,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    dark_burned_sats (t_address, q_address, created_at) {
+    dark_burned_sats (t_address) {
         t_address -> Text,
         q_address -> Text,
         amount -> BigInt,
@@ -28,18 +27,17 @@ diesel::table! {
 }
 
 diesel::table! {
-    dark_minted_sats (t_address, q_address, created_at) {
+    dark_minted_sats (t_address) {
         t_address -> Text,
         q_address -> Text,
         amount -> BigInt,
         block -> BigInt,
-
         created_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    lit_minted_sats (t_address, created_at) {
+    lit_minted_sats (t_address) {
         t_address -> Text,
         amount -> BigInt,
         block -> BigInt,
@@ -48,7 +46,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    lit_burned_sats (t_address, created_at) {
+    lit_burned_sats (t_address) {
         t_address -> Text,
         amount -> BigInt,
         block -> BigInt,
@@ -57,7 +55,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    addr_mappings (t_address, q_address, created_at) {
+    addr_mappings (t_address, q_address) {
         t_address -> Text,
         q_address -> Text,
         block -> BigInt,
@@ -66,7 +64,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    gas_used_nyks (t_address, block, created_at, gas_amount) {
+    gas_used_nyks (t_address, block) {
         t_address -> Text,
         gas_amount -> BigInt,
         denom -> Text,
@@ -76,7 +74,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    qq_tx (tx, block, created_at, block) {
+    qq_tx (tx, block) {
         tx -> Text,
         block -> BigInt,
         created_at -> Timestamp,

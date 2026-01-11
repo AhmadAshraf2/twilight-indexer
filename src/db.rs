@@ -166,7 +166,7 @@ pub fn insert_dark_burned_sats(twilight_address: &str, quis_address: &str, amoun
     };
     diesel::insert_into(dark_burned_sats)
         .values(&new_entry)
-        .on_conflict((t_address, q_address, block))
+        .on_conflict(t_address)
         .do_update()
         .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
@@ -186,7 +186,7 @@ pub fn insert_dark_minted_sats(twilight_address: &str, quis_address: &str, amoun
     };
     diesel::insert_into(dark_minted_sats)
         .values(&new_entry)
-        .on_conflict((t_address, q_address, block))
+        .on_conflict(t_address)
         .do_update()
         .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
@@ -206,7 +206,7 @@ pub fn insert_lit_minted_sats(twilight_address: &str, amount_delta: i64, block_h
     };
     diesel::insert_into(lit_minted_sats)
         .values(&new_entry)
-        .on_conflict((t_address, block))
+        .on_conflict(t_address)
         .do_update()
         .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
@@ -226,7 +226,7 @@ pub fn insert_lit_burned_sats(twilight_address: &str, amount_delta: i64, block_h
     };
     diesel::insert_into(lit_burned_sats)
         .values(&new_entry)
-        .on_conflict((t_address, block))
+        .on_conflict(t_address)
         .do_update()
         .set(amount.eq(amount + amount_delta))
         .execute(&mut conn)?;
@@ -264,6 +264,18 @@ pub fn get_taddress_for_qaddress(quis_address: &str) -> Result<Option<String>> {
         .optional()?;
 
     Ok(mapping.map(|m| m.t_address))
+}
+
+pub fn get_qaddresses_for_taddress(t_addr: &str) -> Result<Vec<AddrMappings>> {
+    use crate::schema::addr_mappings::dsl::*;
+    let mut conn = establish_connection()?;
+
+    let results = addr_mappings
+        .filter(t_address.eq(t_addr))
+        .select(AddrMappings::as_select())
+        .load::<AddrMappings>(&mut conn)?;
+
+    Ok(results)
 }
 
 pub fn insert_gas_used(addr: &str, gas: i64, denom_str: &str, height: i64) -> Result<()> {

@@ -32,12 +32,7 @@ pub struct ErrorResponse {
 pub struct TransactionsResponse {
     pub success: bool,
     pub t_address: String,
-    pub transactions: Vec<TransactionData>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TransactionData {
-    pub block: i64,
+    pub transaction_count: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -108,12 +103,25 @@ pub struct LitBurnedSatsData {
     pub block: i64,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct QAddressData {
+    pub qq_account: String,
+    pub block: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct QAddressesResponse {
+    pub success: bool,
+    pub t_address: String,
+    pub q_addresses: Vec<QAddressData>,
+}
+
 /// Combined response for all address data
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AddressAllDataResponse {
     pub success: bool,
     pub t_address: String,
-    pub transactions: Vec<TransactionData>,
+    pub transaction_count: i64,
     pub funds_moved: Vec<FundsMovedData>,
     pub dark_burned_sats: Vec<DarkBurnedSatsData>,
     pub dark_minted_sats: Vec<DarkMintedSatsData>,
@@ -172,15 +180,12 @@ async fn get_transactions(path: web::Path<String>) -> impl Responder {
 
     match db::get_transactions_by_address(&t_address) {
         Ok(records) => {
-            let transactions: Vec<TransactionData> = records
-                .into_iter()
-                .map(|r| TransactionData { block: r.block })
-                .collect();
+            let transaction_count = records.len() as i64;
 
             HttpResponse::Ok().json(TransactionsResponse {
                 success: true,
                 t_address,
-                transactions,
+                transaction_count,
             })
         }
         Err(e) => {
@@ -193,10 +198,10 @@ async fn get_transactions(path: web::Path<String>) -> impl Responder {
     }
 }
 
-/// API endpoint: GET /api/funds-moved/{t_address}
+/// API endpoint: GET /api/funding/{t_address}
 #[utoipa::path(
     get,
-    path = "/api/funds-moved/{t_address}",
+    path = "/api/funding/{t_address}",
     params(
         ("t_address" = String, Path, description = "Twilight address to query funds moved for")
     ),
@@ -236,10 +241,10 @@ async fn get_funds_moved(path: web::Path<String>) -> impl Responder {
     }
 }
 
-/// API endpoint: GET /api/dark-burned-sats/{t_address}
+/// API endpoint: GET /api/exchange-withdrawal/{t_address}
 #[utoipa::path(
     get,
-    path = "/api/dark-burned-sats/{t_address}",
+    path = "/api/exchange-withdrawal/{t_address}",
     params(
         ("t_address" = String, Path, description = "Twilight address to query dark burned sats for")
     ),
@@ -279,10 +284,10 @@ async fn get_dark_burned_sats(path: web::Path<String>) -> impl Responder {
     }
 }
 
-/// API endpoint: GET /api/dark-minted-sats/{t_address}
+/// API endpoint: GET /api/exchange-deposit/{t_address}
 #[utoipa::path(
     get,
-    path = "/api/dark-minted-sats/{t_address}",
+    path = "/api/exchange-deposit/{t_address}",
     params(
         ("t_address" = String, Path, description = "Twilight address to query dark minted sats for")
     ),
@@ -322,10 +327,10 @@ async fn get_dark_minted_sats(path: web::Path<String>) -> impl Responder {
     }
 }
 
-/// API endpoint: GET /api/lit-minted-sats/{t_address}
+/// API endpoint: GET /api/btc-deposit/{t_address}
 #[utoipa::path(
     get,
-    path = "/api/lit-minted-sats/{t_address}",
+    path = "/api/btc-deposit/{t_address}",
     params(
         ("t_address" = String, Path, description = "Twilight address to query lit minted sats for")
     ),
@@ -364,10 +369,10 @@ async fn get_lit_minted_sats(path: web::Path<String>) -> impl Responder {
     }
 }
 
-/// API endpoint: GET /api/lit-burned-sats/{t_address}
+/// API endpoint: GET /api/btc-withdrawal/{t_address}
 #[utoipa::path(
     get,
-    path = "/api/lit-burned-sats/{t_address}",
+    path = "/api/btc-withdrawal/{t_address}",
     params(
         ("t_address" = String, Path, description = "Twilight address to query lit burned sats for")
     ),
@@ -401,6 +406,48 @@ async fn get_lit_burned_sats(path: web::Path<String>) -> impl Responder {
             HttpResponse::InternalServerError().json(ErrorResponse {
                 success: false,
                 error: format!("Failed to fetch lit burned sats: {}", e),
+            })
+        }
+    }
+}
+
+/// API endpoint: GET /api/qq-account/{t_address}
+#[utoipa::path(
+    get,
+    path = "/api/qq-account/{t_address}",
+    params(
+        ("t_address" = String, Path, description = "Twilight address to query q addresses for")
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved q addresses", body = QAddressesResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    tag = "Address Mappings"
+)]
+async fn get_q_addresses(path: web::Path<String>) -> impl Responder {
+    let t_address = path.into_inner();
+
+    match db::get_qaddresses_for_taddress(&t_address) {
+        Ok(records) => {
+            let q_addresses: Vec<QAddressData> = records
+                .into_iter()
+                .map(|r| QAddressData {
+                    qq_account: r.q_address,
+                    block: r.block,
+                })
+                .collect();
+
+            HttpResponse::Ok().json(QAddressesResponse {
+                success: true,
+                t_address,
+                q_addresses,
+            })
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to fetch q addresses: {:?}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                success: false,
+                error: format!("Failed to fetch q addresses: {}", e),
             })
         }
     }
@@ -440,10 +487,7 @@ async fn get_address_all_data(path: web::Path<String>) -> impl Responder {
         lit_burned_result,
     ) {
         (Ok(txs), Ok(funds), Ok(dark_burned), Ok(dark_minted), Ok(lit_minted), Ok(lit_burned)) => {
-            let transactions: Vec<TransactionData> = txs
-                .into_iter()
-                .map(|r| TransactionData { block: r.block })
-                .collect();
+            let transaction_count = txs.len() as i64;
 
             let funds_moved: Vec<FundsMovedData> = funds
                 .into_iter()
@@ -491,7 +535,7 @@ async fn get_address_all_data(path: web::Path<String>) -> impl Responder {
             HttpResponse::Ok().json(AddressAllDataResponse {
                 success: true,
                 t_address,
-                transactions,
+                transaction_count,
                 funds_moved,
                 dark_burned_sats,
                 dark_minted_sats,
@@ -536,12 +580,12 @@ async fn health_check() -> impl Responder {
         get_dark_minted_sats,
         get_lit_minted_sats,
         get_lit_burned_sats,
+        get_q_addresses,
         get_address_all_data
     ),
     components(
         schemas(
             TransactionsResponse,
-            TransactionData,
             FundsMovedResponse,
             FundsMovedData,
             DarkBurnedSatsResponse,
@@ -552,6 +596,8 @@ async fn health_check() -> impl Responder {
             LitMintedSatsData,
             LitBurnedSatsResponse,
             LitBurnedSatsData,
+            QAddressesResponse,
+            QAddressData,
             AddressAllDataResponse,
             ErrorResponse
         )
@@ -562,6 +608,7 @@ async fn health_check() -> impl Responder {
         (name = "Funds", description = "Funds movement endpoints"),
         (name = "Dark Sats", description = "Dark sats (burned/minted) endpoints"),
         (name = "Lit Sats", description = "Lit sats (burned/minted) endpoints"),
+        (name = "Address Mappings", description = "Address mapping endpoints"),
         (name = "Address", description = "Address data endpoints")
     ),
     info(
@@ -579,11 +626,12 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .route("/health", web::get().to(health_check))
             .route("/decode-transaction", web::post().to(decode_transaction_endpoint))
             .route("/transactions/{t_address}", web::get().to(get_transactions))
-            .route("/funds-moved/{t_address}", web::get().to(get_funds_moved))
-            .route("/dark-burned-sats/{t_address}", web::get().to(get_dark_burned_sats))
-            .route("/dark-minted-sats/{t_address}", web::get().to(get_dark_minted_sats))
-            .route("/lit-minted-sats/{t_address}", web::get().to(get_lit_minted_sats))
-            .route("/lit-burned-sats/{t_address}", web::get().to(get_lit_burned_sats))
+            .route("/funding/{t_address}", web::get().to(get_funds_moved))
+            .route("/exchange-withdrawal/{t_address}", web::get().to(get_dark_burned_sats))
+            .route("/exchange-deposit/{t_address}", web::get().to(get_dark_minted_sats))
+            .route("/btc-deposit/{t_address}", web::get().to(get_lit_minted_sats))
+            .route("/btc-withdrawal/{t_address}", web::get().to(get_lit_burned_sats))
+            .route("/qq-account/{t_address}", web::get().to(get_q_addresses))
             .route("/address/{t_address}/all", web::get().to(get_address_all_data))
     );
 }
