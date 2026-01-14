@@ -81,7 +81,7 @@ pub fn subscribe_block(){
 
         latest_height = match BlockRaw::get_latest_block_height() {
             Ok(height) => height,
-            Err(arg) => {
+            Err(arg ) => {
                 println!("Can not get latest height \nError: {:?}\nSetting height to 0", arg);
                 panic!("Cannot get latest height from chain, check connection settings");
             }

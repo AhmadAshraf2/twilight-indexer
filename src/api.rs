@@ -1,6 +1,7 @@
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use crate::quis_quis_tx::decode_transaction;
 use crate::db;
 use utoipa::{OpenApi, ToSchema};
@@ -129,8 +130,56 @@ pub struct AddressAllDataResponse {
     pub lit_burned_sats: Vec<LitBurnedSatsData>,
 }
 
+/// Convert scalar byte arrays to u64 values in the JSON structure
+fn convert_scalars_to_u64(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            // Check if this is a Scalar object
+            if let Some(Value::Object(scalar_map)) = map.get("Scalar") {
+                if let Some(Value::Array(bytes)) = scalar_map.get("Scalar") {
+                    // Convert the byte array to u64
+                    if let Some(u64_value) = bytes_to_u64(bytes) {
+                        *value = Value::Number(serde_json::Number::from(u64_value));
+                        return;
+                    }
+                }
+            }
+
+            // Recursively process all values in the object
+            for (_, v) in map.iter_mut() {
+                convert_scalars_to_u64(v);
+            }
+        }
+        Value::Array(arr) => {
+            // Recursively process all elements in the array
+            for item in arr.iter_mut() {
+                convert_scalars_to_u64(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Convert a byte array (first 8 bytes) to u64 using little-endian
+fn bytes_to_u64(bytes: &[Value]) -> Option<u64> {
+    if bytes.len() < 8 {
+        return None;
+    }
+
+    let mut array_8 = [0u8; 8];
+    for (i, byte_value) in bytes.iter().take(8).enumerate() {
+        if let Some(byte) = byte_value.as_u64() {
+            array_8[i] = byte as u8;
+        } else {
+            return None;
+        }
+    }
+
+    Some(u64::from_le_bytes(array_8))
+}
+
 /// API endpoint: POST /api/decode-transaction
-/// 
+///
 /// Example request:
 /// ```json
 /// {
@@ -141,10 +190,13 @@ pub struct AddressAllDataResponse {
 async fn decode_transaction_endpoint(
     req: web::Json<DecodeRequest>,
 ) -> impl Responder {
-    
+
     match decode_transaction(&req.tx_byte_code) {
         Ok(decoded_tx) => {
-            let (tx_type, data) = ("transaction", serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({})));
+            let (tx_type, mut data) = ("transaction", serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({})));
+
+            // Convert all scalars to u64 values
+            convert_scalars_to_u64(&mut data);
 
             HttpResponse::Ok().json(DecodeResponse {
                 success: true,
