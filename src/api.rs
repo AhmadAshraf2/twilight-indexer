@@ -139,7 +139,9 @@ fn convert_scalars_to_u64(value: &mut Value) {
                 if let Some(Value::Array(bytes)) = scalar_map.get("Scalar") {
                     // Convert the byte array to u64
                     if let Some(u64_value) = bytes_to_u64(bytes) {
-                        *value = Value::Number(serde_json::Number::from(u64_value));
+                        *value = serde_json::json!({
+                            "scalar": u64_value
+                        });
                         return;
                     }
                 }
