@@ -392,7 +392,7 @@ async fn get_dark_minted_sats(path: web::Path<String>) -> impl Responder {
         (status = 200, description = "Successfully retrieved lit minted sats", body = LitMintedSatsResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Btc Deposited"
+    tag = "BTC Deposited"
 )]
 async fn get_lit_minted_sats(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
