@@ -257,13 +257,13 @@ async fn get_transactions(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/funding/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query funds moved for")
+        ("t_address" = String, Path, description = "Twilight address to query total amount of funds moved between funding accounts")
     ),
     responses(
         (status = 200, description = "Successfully retrieved funds moved", body = FundsMovedResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Funds"
+    tag = "Funding to Funding"
 )]
 async fn get_funds_moved(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -300,13 +300,13 @@ async fn get_funds_moved(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/exchange-withdrawal/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query dark burned sats for")
+        ("t_address" = String, Path, description = "Twilight address against which to query total amount of Nyks Sats moved from trading to funding account")
     ),
     responses(
         (status = 200, description = "Successfully retrieved dark burned sats", body = DarkBurnedSatsResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Dark Sats"
+    tag = "Trading to Funding"
 )]
 async fn get_dark_burned_sats(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -343,13 +343,13 @@ async fn get_dark_burned_sats(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/exchange-deposit/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query dark minted sats for")
+        ("t_address" = String, Path, description = "Twilight address against which to query total amount of Nyks Sats moved from funding to trading account")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved dark minted sats", body = DarkMintedSatsResponse),
+        (status = 200, description = "Successfully retrieved minted sats", body = DarkMintedSatsResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Dark Sats"
+    tag = "Funding to Trading"
 )]
 async fn get_dark_minted_sats(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -386,13 +386,13 @@ async fn get_dark_minted_sats(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/btc-deposit/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query lit minted sats for")
+        ("t_address" = String, Path, description = "Twilight address against which to query total amount of Nyks Sats deposited from btc chain to Nyks")
     ),
     responses(
         (status = 200, description = "Successfully retrieved lit minted sats", body = LitMintedSatsResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Lit Sats"
+    tag = "Btc Deposited"
 )]
 async fn get_lit_minted_sats(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -428,13 +428,13 @@ async fn get_lit_minted_sats(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/btc-withdrawal/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query lit burned sats for")
+        ("t_address" = String, Path, description = "Twilight address against which to query total amount of Nyks Sats withdrawn from Nyks to btc chain")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved lit burned sats", body = LitBurnedSatsResponse),
+        (status = 200, description = "Successfully retrieved withdrawn sats", body = LitBurnedSatsResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Lit Sats"
+    tag = "BTC Withdrawn"
 )]
 async fn get_lit_burned_sats(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -470,13 +470,13 @@ async fn get_lit_burned_sats(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/qq-account/{t_address}",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query q addresses for")
+        ("t_address" = String, Path, description = "Twilight address against which to query quis quis accounts")
     ),
     responses(
         (status = 200, description = "Successfully retrieved q addresses", body = QAddressesResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Address Mappings"
+    tag = "Twilight/qq mapping"
 )]
 async fn get_q_addresses(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -513,13 +513,13 @@ async fn get_q_addresses(path: web::Path<String>) -> impl Responder {
     get,
     path = "/api/address/{t_address}/all",
     params(
-        ("t_address" = String, Path, description = "Twilight address to query all data for")
+        ("t_address" = String, Path, description = "Twilight address to query general stats for")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all address data", body = AddressAllDataResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    tag = "Address"
+    tag = "Stats"
 )]
 async fn get_address_all_data(path: web::Path<String>) -> impl Responder {
     let t_address = path.into_inner();
@@ -658,17 +658,19 @@ async fn health_check() -> impl Responder {
     ),
     tags(
         (name = "Health", description = "Health check endpoints"),
-        (name = "Transactions", description = "Transaction-related endpoints"),
-        (name = "Funds", description = "Funds movement endpoints"),
-        (name = "Dark Sats", description = "Dark sats (burned/minted) endpoints"),
-        (name = "Lit Sats", description = "Lit sats (burned/minted) endpoints"),
-        (name = "Address Mappings", description = "Address mapping endpoints"),
-        (name = "Address", description = "Address data endpoints")
+        (name = "Transactions", description = "Returns transaction blocks for each Twilight address"),
+        (name = "Funding to Funding", description = "Returns funds moved between funding accounts"),
+        (name = "Funding to Trading", description = "Returns funds moved from funding to trading accounts"),
+        (name = "Trading to Funding", description = "Returns funds moved from trading to funding accounts"),
+        (name = "BTC Deposited", description = "Returns Btc Deposited to Twilight Reserves"),
+        (name = "BTC Withdrawn", description = "Returns Btc Withdrawn from Twilight Reserves"),
+        (name = "Twilight/qq mapping", description = "Address mappings between Twilight and quis quis accounts"),
+        (name = "Stats", description = "General stats for a given Twilight address")
     ),
     info(
         title = "Twilight Indexer API",
         version = "1.0.0",
-        description = "API for querying Twilight blockchain indexer data"
+        description = "API for querying Twilight's ZKOS blockchain stats"
     )
 )]
 pub struct ApiDoc;
