@@ -77,6 +77,7 @@ pub fn subscribe_block(){
                     }
                 }
             }
+            BlockRaw::write_local_block_height(block_height);
         }
 
         latest_height = match BlockRaw::get_latest_block_height() {
