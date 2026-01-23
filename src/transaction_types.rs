@@ -86,6 +86,69 @@ pub struct DecodedTx {
     pub _messages: Vec<StandardCosmosMsg>,
 }
 
+/// Extract signer address from a message's Any type (for gas tracking)
+fn extract_signer_from_any(any: &Any) -> Option<String> {
+    let t = any.type_url.as_str();
+    let bytes = any.value.as_slice();
+
+    // cosmos.bank.v1beta1.MsgSend
+    if ty(t, "cosmos.bank.v1beta1.MsgSend") {
+        if let Ok(tx) = MsgSend::decode(bytes) {
+            return Some(tx.from_address);
+        }
+    }
+    // cosmos.staking.v1beta1.MsgDelegate
+    if ty(t, "cosmos.staking.v1beta1.MsgDelegate") {
+        if let Ok(tx) = MsgDelegate::decode(bytes) {
+            return Some(tx.delegator_address);
+        }
+    }
+    // cosmos.staking.v1beta1.MsgUndelegate
+    if ty(t, "cosmos.staking.v1beta1.MsgUndelegate") {
+        if let Ok(tx) = MsgUndelegate::decode(bytes) {
+            return Some(tx.delegator_address);
+        }
+    }
+    // cosmos.staking.v1beta1.MsgBeginRedelegate
+    if ty(t, "cosmos.staking.v1beta1.MsgBeginRedelegate") {
+        if let Ok(tx) = MsgBeginRedelegate::decode(bytes) {
+            return Some(tx.delegator_address);
+        }
+    }
+    // cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward
+    if ty(t, "cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
+        if let Ok(tx) = MsgWithdrawDelegatorReward::decode(bytes) {
+            return Some(tx.delegator_address);
+        }
+    }
+    // cosmos.gov.v1beta1.MsgVote
+    if ty(t, "cosmos.gov.v1beta1.MsgVote") {
+        if let Ok(tx) = MsgVote::decode(bytes) {
+            return Some(tx.voter);
+        }
+    }
+    // twilightproject.nyks.bridge.MsgConfirmBtcDeposit
+    if ty(t, "twilightproject.nyks.bridge.MsgConfirmBtcDeposit") {
+        if let Ok(tx) = nyksBridge::MsgConfirmBtcDeposit::decode(bytes) {
+            return Some(tx.twilight_deposit_address);
+        }
+    }
+    // twilightproject.nyks.bridge.MsgWithdrawBtcRequest
+    if ty(t, "twilightproject.nyks.bridge.MsgWithdrawBtcRequest") {
+        if let Ok(tx) = nyksBridge::MsgWithdrawBtcRequest::decode(bytes) {
+            return Some(tx.twilight_address);
+        }
+    }
+    // twilightproject.nyks.zkos.MsgMintBurnTradingBtc
+    if ty(t, "twilightproject.nyks.zkos.MsgMintBurnTradingBtc") {
+        if let Ok(tx) = nyksZkos::MsgMintBurnTradingBtc::decode(bytes) {
+            return Some(tx.twilight_address);
+        }
+    }
+
+    None
+}
+
 /// Decode a base64-encoded TxRaw (from `block.txs[i]`) into concrete structs.
 pub fn decode_tx_base64_standard(tx_b64: &str, block_height: u64) -> Result<DecodedTx> {
     // 1) base64 → bytes → TxRaw
@@ -96,25 +159,25 @@ pub fn decode_tx_base64_standard(tx_b64: &str, block_height: u64) -> Result<Deco
     let body = TxBody::decode(tx_raw.body_bytes.as_slice())?;
     let auth = AuthInfo::decode(tx_raw.auth_info_bytes.as_slice())?;
 
-    // 3) Messages (Any) → typed messages
+    // 3) Extract signer address from first message (for gas tracking)
+    let signer_address = body.messages.first().and_then(extract_signer_from_any);
+
+    // 4) Messages (Any) → typed messages
     let mut msgs = Vec::<StandardCosmosMsg>::new();
     for any in &body.messages {
         msgs.push(decode_standard_any(any, block_height)?);
     }
 
-    // match auth.fee {
-    //     Some(fee) =>{
-    //         if let Err(e) = insert_gas_used_nyks(
-    //             tx,
-    //             fee.amount[0].amount.parse::<i64>().expect("Failed to parse gas amount string to i64"),
-    //             &fee.amount[0].denom,
-    //             block_height,
-    //         ) {
-    //             eprintln!("⚠️ Failed to update gas_used_nyks for {}: {:?}", &body.signer_infos[0].public_key.as_ref().unwrap().to_string(), e);
-    //         }   
-    //     },
-    //     None => panic!("fee must be present"),
-    // };
+    // 5) Record gas usage if we have fee info and a signer address
+    if let (Some(fee), Some(addr)) = (&auth.fee, &signer_address) {
+        if let Some(coin) = fee.amount.first() {
+            if let Ok(gas_amount) = coin.amount.parse::<i64>() {
+                if let Err(e) = insert_gas_used(&addr, gas_amount, &coin.denom, block_height as i64) {
+                    eprintln!("⚠️ Failed to update gas_used_nyks for {}: {:?}", addr, e);
+                }
+            }
+        }
+    }
 
     Ok(DecodedTx {
         _body: body,
