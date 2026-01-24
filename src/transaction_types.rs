@@ -404,49 +404,82 @@ pub fn decode_standard_any(any: &Any, block_height: u64) -> Result<StandardCosmo
                     println!("🔍 Script TX - input[0].in_type: {:?}, output[0].out_type: {:?}",
                              inputs[0].in_type, outputs[0].out_type);
 
-                    let owner = match inputs[0].as_owner_address() {
-                        Some(o) => {
-                            println!("🔍 Script TX - owner address: {}", o);
-                            o.clone()
-                        },
-                        None => {
-                            eprintln!("⚠️ Failed to get owner address from input");
-                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
-                        },
-                    };
-
-                    let new_qq_account = match outputs[0].to_quisquis_account() {
-                        Ok(acc) => acc,
-                        Err(e) => {
-                            eprintln!("⚠️ Failed to convert output to quisquis account: {}", e);
-                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
-                        }
-                    };
-                    let new_qq_account = hex::encode(
-                        bincode::serialize(&new_qq_account)
-                            .expect("Failed to serialize account to bytes")
-                    );
-
-                    println!("🔍 Script TX - new_qq_account: {}", new_qq_account);
-
                     let is_order_open = inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo;
                     let is_order_close = inputs[0].in_type == zkvm::IOType::Memo && outputs[0].out_type == zkvm::IOType::Coin;
 
                     println!("🔍 Script TX - is_order_open: {}, is_order_close: {}", is_order_open, is_order_close);
 
                     if is_order_open {
-                        println!("📝 Inserting order_open_tx: to={}, from={}, block={}", new_qq_account, owner, block_height);
-                        if let Err(e) = insert_order_open_tx(&new_qq_account, &owner, block_height){
-                            eprintln!("⚠️ Failed to insert order_open_tx for {}: {:?}", new_qq_account, e);
+                        // Order Open: Coin input -> Memo output
+                        // Get owner from input (Coin), get destination from output (Memo owner)
+                        let from_address = match inputs[0].as_owner_address() {
+                            Some(o) => {
+                                println!("🔍 Order Open - from_address (input owner): {}", o);
+                                o.clone()
+                            },
+                            None => {
+                                eprintln!("⚠️ Failed to get owner address from input");
+                                return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                            },
+                        };
+
+                        // Get owner from output by matching on OutputData
+                        let to_address = match &outputs[0].output {
+                            zkvm::OutputData::Memo(memo) => {
+                                println!("🔍 Order Open - to_address (memo owner): {}", memo.owner);
+                                memo.owner.clone()
+                            },
+                            zkvm::OutputData::Coin(coin) => {
+                                println!("🔍 Order Open - to_address (coin owner): {}", coin.owner);
+                                coin.owner.clone()
+                            },
+                            _ => {
+                                eprintln!("⚠️ Failed to get owner address from output - unexpected type");
+                                return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                            },
+                        };
+
+                        println!("📝 Inserting order_open_tx: to={}, from={}, block={}", to_address, from_address, block_height);
+                        if let Err(e) = insert_order_open_tx(&to_address, &from_address, block_height){
+                            eprintln!("⚠️ Failed to insert order_open_tx: {:?}", e);
                         } else {
                             println!("✅ Successfully inserted order_open_tx");
                         }
                     }
 
                     if is_order_close {
-                        println!("📝 Inserting order_close_tx: to={}, from={}, block={}", new_qq_account, owner, block_height);
-                        if let Err(e) = insert_order_close_tx(&new_qq_account, &owner, block_height){
-                            eprintln!("⚠️ Failed to insert order_close_tx for {}: {:?}", new_qq_account, e);
+                        // Order Close: Memo input -> Coin output
+                        // Get owner from input (Memo), get destination from output (Coin)
+                        let from_address = match inputs[0].as_owner_address() {
+                            Some(o) => {
+                                println!("🔍 Order Close - from_address (input owner): {}", o);
+                                o.clone()
+                            },
+                            None => {
+                                eprintln!("⚠️ Failed to get owner address from input");
+                                return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                            },
+                        };
+
+                        // Get owner from output by matching on OutputData
+                        let to_address = match &outputs[0].output {
+                            zkvm::OutputData::Coin(coin) => {
+                                println!("🔍 Order Close - to_address (coin owner): {}", coin.owner);
+                                coin.owner.clone()
+                            },
+                            zkvm::OutputData::Memo(memo) => {
+                                println!("🔍 Order Close - to_address (memo owner): {}", memo.owner);
+                                memo.owner.clone()
+                            },
+                            _ => {
+                                eprintln!("⚠️ Failed to get owner address from output - unexpected type");
+                                return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
+                            },
+                        };
+
+                        println!("📝 Inserting order_close_tx: to={}, from={}, block={}", to_address, from_address, block_height);
+                        if let Err(e) = insert_order_close_tx(&to_address, &from_address, block_height){
+                            eprintln!("⚠️ Failed to insert order_close_tx: {:?}", e);
                         } else {
                             println!("✅ Successfully inserted order_close_tx");
                         }
