@@ -327,11 +327,27 @@ pub fn decode_standard_any(any: &Any, block_height: u64) -> Result<StandardCosmo
     }
 
     if ty(t, "twilightproject.nyks.zkos.MsgTransferTx") {
+        println!("🔍 Processing MsgTransferTx at block {}", block_height);
         let cosmos_tx = nyksZkos::MsgTransferTx::decode(bytes)?;
-        let decoded = decode_qq_transaction(&cosmos_tx.tx_byte_code, block_height)?;
+        println!("🔍 tx_byte_code length: {}", cosmos_tx.tx_byte_code.len());
+
+        let decoded = match decode_qq_transaction(&cosmos_tx.tx_byte_code, block_height) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("⚠️ Failed to decode QQ transaction: {:?}", e);
+                return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
+            }
+        };
+
+        println!("🔍 Decoded QQ transaction type: {:?}", match &decoded {
+            DecodedQQTx::Transfer(_) => "Transfer",
+            DecodedQQTx::Script(_) => "Script",
+            DecodedQQTx::Message(_) => "Message",
+        });
+
         match decoded {
                 DecodedQQTx::Transfer(tx) => {
-                    eprint!("Got transfer tx: {:?}", tx);
+                    println!("Got transfer tx: {:?}", tx);
                     let inputs = tx.get_input_values();
                     let outputs = tx.get_output_values();
                     if inputs.is_empty() || outputs.is_empty() { 
