@@ -377,38 +377,68 @@ pub fn decode_standard_any(any: &Any, block_height: u64) -> Result<StandardCosmo
                     println!("Got script tx: {:?}", script_tx);
                     let inputs = script_tx.get_input_values();
                     let outputs = script_tx.get_output_values();
-                    if inputs.is_empty() || outputs.is_empty() { 
-                        eprintln!("⚠️ TransferTransaction has no inputs or outputs");
+
+                    println!("🔍 Script TX - inputs count: {}, outputs count: {}", inputs.len(), outputs.len());
+
+                    if inputs.is_empty() || outputs.is_empty() {
+                        eprintln!("⚠️ ScriptTransaction has no inputs or outputs");
                         return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
                     }
+
+                    println!("🔍 Script TX - input[0].in_type: {:?}, output[0].out_type: {:?}",
+                             inputs[0].in_type, outputs[0].out_type);
+
                     let owner = match inputs[0].as_owner_address() {
-                        Some(o) => o.clone(),
+                        Some(o) => {
+                            println!("🔍 Script TX - owner address: {}", o);
+                            o.clone()
+                        },
                         None => {
                             eprintln!("⚠️ Failed to get owner address from input");
                             return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
                         },
                     };
-                    let new_qq_account = outputs[0]
-                        .to_quisquis_account()
-                        .expect("Failed to convert to quisquis account"
-                    );
+
+                    let new_qq_account = match outputs[0].to_quisquis_account() {
+                        Ok(acc) => acc,
+                        Err(e) => {
+                            eprintln!("⚠️ Failed to convert output to quisquis account: {}", e);
+                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
+                        }
+                    };
                     let new_qq_account = hex::encode(
-                    bincode::serialize(&new_qq_account)
-                        .expect("Failed to serialize account to bytes")
+                        bincode::serialize(&new_qq_account)
+                            .expect("Failed to serialize account to bytes")
                     );
 
-                    if inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo {
+                    println!("🔍 Script TX - new_qq_account: {}", new_qq_account);
+
+                    let is_order_open = inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo;
+                    let is_order_close = inputs[0].in_type == zkvm::IOType::Memo && outputs[0].out_type == zkvm::IOType::Coin;
+
+                    println!("🔍 Script TX - is_order_open: {}, is_order_close: {}", is_order_open, is_order_close);
+
+                    if is_order_open {
+                        println!("📝 Inserting order_open_tx: to={}, from={}, block={}", new_qq_account, owner, block_height);
                         if let Err(e) = insert_order_open_tx(&new_qq_account, &owner, block_height){
-                            eprintln!("⚠️ Failed to update close order for {}: {:?}", new_qq_account, e);
+                            eprintln!("⚠️ Failed to insert order_open_tx for {}: {:?}", new_qq_account, e);
+                        } else {
+                            println!("✅ Successfully inserted order_open_tx");
                         }
                     }
 
-                    if inputs[0].in_type == zkvm::IOType::Memo && outputs[0].out_type == zkvm::IOType::Coin {
+                    if is_order_close {
+                        println!("📝 Inserting order_close_tx: to={}, from={}, block={}", new_qq_account, owner, block_height);
                         if let Err(e) = insert_order_close_tx(&new_qq_account, &owner, block_height){
-                            eprintln!("⚠️ Failed to update open order for {}: {:?}", new_qq_account, e);
+                            eprintln!("⚠️ Failed to insert order_close_tx for {}: {:?}", new_qq_account, e);
+                        } else {
+                            println!("✅ Successfully inserted order_close_tx");
                         }
                     }
-                    
+
+                    if !is_order_open && !is_order_close {
+                        println!("⚠️ Script TX did not match order_open or order_close conditions");
+                    }
                 }
                 DecodedQQTx::Message(msg) => {
                     println!("Got message tx: {:?}", msg);
