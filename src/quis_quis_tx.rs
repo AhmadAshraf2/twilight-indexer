@@ -42,13 +42,33 @@ pub enum DecodedQQTx {
 }
 
 pub fn decode_qq_transaction(tx_byte_code: &str, block_height: u64) -> Result<DecodedQQTx> {
-    // assumes you already have this helper that deserializes the *full* `transaction::Transaction`
-    // (bincode or postcard as you implemented earlier)
-    let t = decode_transaction(tx_byte_code)?;
+    println!("🔍 decode_qq_transaction: starting decode...");
+
+    let t = match decode_transaction(tx_byte_code) {
+        Ok(t) => {
+            println!("🔍 decode_qq_transaction: decode_transaction succeeded, tx_type: {:?}",
+                match &t.tx {
+                    TransactionData::TransactionTransfer(_) => "Transfer",
+                    TransactionData::TransactionScript(_) => "Script",
+                    TransactionData::Message(_) => "Message",
+                });
+            t
+        },
+        Err(e) => {
+            eprintln!("⚠️ decode_qq_transaction: decode_transaction failed: {:?}", e);
+            return Err(e);
+        }
+    };
+
     let ts_json = serde_json::to_string_pretty(&t)
         .context("Failed to serialize Transaction to JSON")?;
 
-    insert_qq_tx(&ts_json, block_height).context("Failed to insert QQ transaction into database")?;
+    println!("🔍 decode_qq_transaction: inserting to qq_tx table...");
+    if let Err(e) = insert_qq_tx(&ts_json, block_height) {
+        eprintln!("⚠️ decode_qq_transaction: insert_qq_tx failed: {:?}", e);
+        return Err(e.into());
+    }
+    println!("🔍 decode_qq_transaction: insert succeeded");
 
     Ok(match t.tx {
         TransactionData::TransactionTransfer(tx) => DecodedQQTx::Transfer(tx),

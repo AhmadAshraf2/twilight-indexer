@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use crate::schema::*;
 use anyhow::Result;
 use diesel::PgConnection;
+use sha2::{Sha256, Digest};
 
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = transactions)]
@@ -75,6 +76,7 @@ pub struct GasUsedNyks {
 #[derive(Queryable, Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = qq_tx)]
 pub struct QQTx {
+    pub tx_hash: String,
     pub tx: String,
     pub block: i64,
 }
@@ -302,13 +304,20 @@ pub fn insert_qq_tx(tx_str: &str, block_height: u64) -> Result<()> {
     use crate::schema::qq_tx::dsl::*;
     let mut conn = establish_connection()?;
 
+    // Generate SHA256 hash of the transaction JSON for the primary key
+    let mut hasher = Sha256::new();
+    hasher.update(tx_str.as_bytes());
+    let hash_bytes = hasher.finalize();
+    let hash_hex = hex::encode(hash_bytes);
+
     let new_entry = QQTx {
+        tx_hash: hash_hex,
         tx: tx_str.to_string(),
         block: block_height as i64,
     };
     diesel::insert_into(qq_tx)
         .values(&new_entry)
-        .on_conflict((tx, block))
+        .on_conflict((tx_hash, block))
         .do_nothing()
         .execute(&mut conn)?;
 

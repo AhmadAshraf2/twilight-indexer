@@ -74,7 +74,8 @@ diesel::table! {
 }
 
 diesel::table! {
-    qq_tx (tx, block) {
+    qq_tx (tx_hash, block) {
+        tx_hash -> Text,
         tx -> Text,
         block -> BigInt,
         created_at -> Timestamp,
