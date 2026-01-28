@@ -700,7 +700,12 @@ pub async fn start_api_server(host: &str, port: u16) -> std::io::Result<()> {
     println!("📚 Swagger UI available at http://{}:{}/swagger-ui/", host, port);
 
     HttpServer::new(move || {
-        let cors = Cors::permissive(); // Or configure more restrictively
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .supports_credentials()
+            .max_age(3600);
 
         App::new()
             .wrap(cors)
