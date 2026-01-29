@@ -130,14 +130,141 @@ pub struct AddressAllDataResponse {
     pub lit_burned_sats: Vec<LitBurnedSatsData>,
 }
 
-/// Convert scalar byte arrays to u64 values in the JSON structure
-fn convert_scalars_to_u64(value: &mut Value) {
+/// Convert opcode byte to instruction name
+fn opcode_to_name(opcode: u8) -> &'static str {
+    match opcode {
+        0x00 => "push",
+        0x01 => "program",
+        0x02 => "drop",
+        0x03 => "dup",
+        0x04 => "roll",
+        0x05 => "scalar",
+        0x06 => "commit",
+        0x07 => "alloc",
+        0x0a => "expr",
+        0x0b => "neg",
+        0x0c => "add",
+        0x0d => "mul",
+        0x0e => "eq",
+        0x0f => "range",
+        0x10 => "and",
+        0x11 => "or",
+        0x12 => "not",
+        0x13 => "verify",
+        0x14 => "unblind",
+        0x15 => "issue",
+        0x16 => "borrow",
+        0x17 => "retire",
+        0x19 => "fee",
+        0x1a => "input",
+        0x1b => "output",
+        0x1c => "contract",
+        0x1d => "log",
+        0x1e => "call",
+        0x1f => "signtx",
+        0x20 => "signid",
+        0x21 => "signtag",
+        0x22 => "inputcoin",
+        0x23 => "outputcoin",
+        _ => "ext",
+    }
+}
+
+/// Check if opcode has a u32 argument
+fn opcode_has_arg(opcode: u8) -> bool {
+    matches!(opcode, 0x03 | 0x04 | 0x1b | 0x1c | 0x22 | 0x23) // dup, roll, output, contract, inputcoin, outputcoin
+}
+
+/// Check if opcode has variable-length data (push, program)
+fn opcode_has_data(opcode: u8) -> bool {
+    matches!(opcode, 0x00 | 0x01) // push, program
+}
+
+/// Convert program bytes to human-readable instructions
+fn decode_program_bytes(bytes: &[Value]) -> Vec<String> {
+    let mut instructions = Vec::new();
+    let mut i = 0;
+
+    // Convert Value array to u8 array
+    let byte_vec: Vec<u8> = bytes.iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+
+    while i < byte_vec.len() {
+        let opcode = byte_vec[i];
+        let name = opcode_to_name(opcode);
+
+        if opcode_has_data(opcode) {
+            // push or program: read 4-byte length, then skip data
+            if i + 5 <= byte_vec.len() {
+                let len = u32::from_le_bytes([
+                    byte_vec[i + 1],
+                    byte_vec[i + 2],
+                    byte_vec[i + 3],
+                    byte_vec[i + 4],
+                ]) as usize;
+                instructions.push(format!("{}:{}", name, len));
+                i += 5 + len;
+            } else {
+                instructions.push(name.to_string());
+                i += 1;
+            }
+        } else if opcode_has_arg(opcode) {
+            // Instructions with u32 argument
+            if i + 5 <= byte_vec.len() {
+                let arg = u32::from_le_bytes([
+                    byte_vec[i + 1],
+                    byte_vec[i + 2],
+                    byte_vec[i + 3],
+                    byte_vec[i + 4],
+                ]);
+                instructions.push(format!("{}:{}", name, arg));
+                i += 5;
+            } else {
+                instructions.push(name.to_string());
+                i += 1;
+            }
+        } else {
+            instructions.push(name.to_string());
+            i += 1;
+        }
+    }
+
+    instructions
+}
+
+/// Convert byte array to hex string
+fn bytes_to_hex(bytes: &[Value]) -> String {
+    bytes.iter()
+        .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+        .collect()
+}
+
+/// Transform the JSON to convert txid, program, and scalars to human-readable formats
+fn transform_decoded_tx(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            // Check if this is a Scalar object
+            // Convert txid byte arrays to hex strings
+            if map.contains_key("txid") {
+                if let Some(Value::Array(bytes)) = map.get("txid") {
+                    let hex_str = bytes_to_hex(bytes);
+                    map.insert("txid".to_string(), Value::String(hex_str));
+                }
+            }
+
+            // Convert program byte arrays to instruction lists
+            if map.contains_key("program") {
+                if let Some(Value::Array(bytes)) = map.get("program") {
+                    let instructions = decode_program_bytes(bytes);
+                    map.insert("program".to_string(), Value::Array(
+                        instructions.into_iter().map(Value::String).collect()
+                    ));
+                }
+            }
+
+            // Convert Scalar objects to u64 values
             if let Some(Value::Object(scalar_map)) = map.get("Scalar") {
                 if let Some(Value::Array(bytes)) = scalar_map.get("Scalar") {
-                    // Convert the byte array to u64
                     if let Some(u64_value) = bytes_to_u64(bytes) {
                         *value = serde_json::json!({
                             "scalar": u64_value
@@ -149,13 +276,13 @@ fn convert_scalars_to_u64(value: &mut Value) {
 
             // Recursively process all values in the object
             for (_, v) in map.iter_mut() {
-                convert_scalars_to_u64(v);
+                transform_decoded_tx(v);
             }
         }
         Value::Array(arr) => {
             // Recursively process all elements in the array
             for item in arr.iter_mut() {
-                convert_scalars_to_u64(item);
+                transform_decoded_tx(item);
             }
         }
         _ => {}
@@ -197,8 +324,8 @@ async fn decode_transaction_endpoint(
         Ok(decoded_tx) => {
             let (tx_type, mut data) = ("transaction", serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({})));
 
-            // Convert all scalars to u64 values
-            convert_scalars_to_u64(&mut data);
+            // Transform txid to hex, program to instructions, scalars to u64
+            transform_decoded_tx(&mut data);
 
             HttpResponse::Ok().json(DecodeResponse {
                 success: true,
