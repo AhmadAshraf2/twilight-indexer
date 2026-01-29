@@ -699,9 +699,19 @@ fn extract_tx_summary(data: &Value) -> Value {
 
             // Extract script-specific info
             if let Some(script_tx) = tx.get("TransactionScript") {
-                // Get input/output types
-                let in_type = script_tx.get("in_type").and_then(|v| v.as_str()).unwrap_or("");
-                let out_type = script_tx.get("out_type").and_then(|v| v.as_str()).unwrap_or("");
+                // Get input/output types from first input/output
+                let in_type = script_tx.get("inputs")
+                    .and_then(|inputs| inputs.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|input| input.get("in_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let out_type = script_tx.get("outputs")
+                    .and_then(|outputs| outputs.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|output| output.get("out_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
 
                 summary.insert("input_type".to_string(), Value::String(in_type.to_string()));
                 summary.insert("output_type".to_string(), Value::String(out_type.to_string()));
