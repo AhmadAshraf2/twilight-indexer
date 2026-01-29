@@ -240,6 +240,16 @@ fn bytes_to_hex(bytes: &[Value]) -> String {
         .collect()
 }
 
+/// Get description for input/output type
+fn get_type_description(type_name: &str) -> &'static str {
+    match type_name {
+        "Coin" => "Spendable coin output with encrypted value",
+        "Memo" => "Script-locked memo output for order data",
+        "State" => "Contract state output",
+        _ => "Unknown output type",
+    }
+}
+
 /// Transform the JSON to convert txid, program, and scalars to human-readable formats
 fn transform_decoded_tx(value: &mut Value) {
     match value {
@@ -259,6 +269,95 @@ fn transform_decoded_tx(value: &mut Value) {
                     map.insert("program".to_string(), Value::Array(
                         instructions.into_iter().map(Value::String).collect()
                     ));
+                }
+            }
+
+            // Convert encrypt.c and encrypt.d byte arrays to hex
+            if map.contains_key("encrypt") {
+                if let Some(Value::Object(encrypt_map)) = map.get_mut("encrypt") {
+                    if let Some(Value::Array(c_bytes)) = encrypt_map.get("c") {
+                        let hex_str = bytes_to_hex(c_bytes);
+                        encrypt_map.insert("c".to_string(), Value::String(hex_str));
+                    }
+                    if let Some(Value::Array(d_bytes)) = encrypt_map.get("d") {
+                        let hex_str = bytes_to_hex(d_bytes);
+                        encrypt_map.insert("d".to_string(), Value::String(hex_str));
+                    }
+                }
+            }
+
+            // Convert commitment (Closed variant) to hex
+            if map.contains_key("commitment") {
+                if let Some(Value::Object(commit_map)) = map.get_mut("commitment") {
+                    if let Some(Value::Array(closed_bytes)) = commit_map.get("Closed") {
+                        let hex_str = bytes_to_hex(closed_bytes);
+                        commit_map.insert("Closed".to_string(), Value::String(hex_str));
+                    }
+                }
+            }
+
+            // Convert proof byte array to hex
+            if map.contains_key("proof") {
+                if let Some(Value::Array(bytes)) = map.get("proof") {
+                    let hex_str = bytes_to_hex(bytes);
+                    map.insert("proof".to_string(), Value::String(hex_str));
+                }
+            }
+
+            // Convert witness.sign to hex
+            if map.contains_key("witness") {
+                if let Some(Value::Object(witness_map)) = map.get_mut("witness") {
+                    if let Some(Value::Array(sign_bytes)) = witness_map.get("sign") {
+                        let hex_str = bytes_to_hex(sign_bytes);
+                        witness_map.insert("sign".to_string(), Value::String(hex_str));
+                    }
+                }
+            }
+
+            // Convert call_proof.path.neighbors to hex array
+            if map.contains_key("call_proof") {
+                if let Some(Value::Object(call_proof_map)) = map.get_mut("call_proof") {
+                    if let Some(Value::Object(path_map)) = call_proof_map.get_mut("path") {
+                        if let Some(Value::Array(neighbors)) = path_map.get("neighbors") {
+                            let hex_neighbors: Vec<Value> = neighbors.iter()
+                                .filter_map(|n| {
+                                    if let Value::Array(bytes) = n {
+                                        Some(Value::String(bytes_to_hex(bytes)))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            path_map.insert("neighbors".to_string(), Value::Array(hex_neighbors));
+                        }
+                    }
+                    // Convert network bytes to hex if present
+                    if let Some(Value::Array(network_bytes)) = call_proof_map.get("network") {
+                        let hex_str = bytes_to_hex(network_bytes);
+                        call_proof_map.insert("network".to_string(), Value::String(hex_str));
+                    }
+                }
+            }
+
+            // Add description for in_type
+            if let Some(Value::String(in_type)) = map.get("in_type").cloned() {
+                let desc = get_type_description(&in_type);
+                map.insert("in_type_description".to_string(), Value::String(desc.to_string()));
+            }
+
+            // Add description for out_type
+            if let Some(Value::String(out_type)) = map.get("out_type").cloned() {
+                let desc = get_type_description(&out_type);
+                map.insert("out_type_description".to_string(), Value::String(desc.to_string()));
+            }
+
+            // Format timebounds with description
+            if let Some(Value::Number(tb)) = map.get("timebounds").cloned() {
+                if let Some(tb_val) = tb.as_u64() {
+                    map.insert("timebounds".to_string(), serde_json::json!({
+                        "value": tb_val,
+                        "description": "Block height or relative timelock"
+                    }));
                 }
             }
 
@@ -307,6 +406,77 @@ fn bytes_to_u64(bytes: &[Value]) -> Option<u64> {
     Some(u64::from_le_bytes(array_8))
 }
 
+/// Extract transaction summary from the decoded transaction
+fn extract_tx_summary(data: &Value) -> Value {
+    let mut summary = serde_json::Map::new();
+
+    // Get tx_type from the transaction structure
+    if let Some(tx) = data.get("tx") {
+        if tx.get("TransactionTransfer").is_some() {
+            summary.insert("tx_type".to_string(), Value::String("Transfer".to_string()));
+        } else if tx.get("TransactionScript").is_some() {
+            summary.insert("tx_type".to_string(), Value::String("Script".to_string()));
+
+            // Extract script-specific info
+            if let Some(script_tx) = tx.get("TransactionScript") {
+                // Get input/output types
+                if let Some(in_type) = script_tx.get("in_type") {
+                    summary.insert("input_type".to_string(), in_type.clone());
+                }
+                if let Some(out_type) = script_tx.get("out_type") {
+                    summary.insert("output_type".to_string(), out_type.clone());
+                }
+
+                // Count inputs/outputs
+                if let Some(Value::Array(inputs)) = script_tx.get("inputs") {
+                    summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
+                }
+                if let Some(Value::Array(outputs)) = script_tx.get("outputs") {
+                    summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
+                }
+
+                // Get fee
+                if let Some(fee) = script_tx.get("fee") {
+                    summary.insert("fee".to_string(), fee.clone());
+                }
+
+                // Check if has proof
+                if let Some(proof) = script_tx.get("proof") {
+                    let has_proof = match proof {
+                        Value::Null => false,
+                        Value::Array(arr) => !arr.is_empty(),
+                        Value::String(s) => !s.is_empty(),
+                        _ => true,
+                    };
+                    summary.insert("has_proof".to_string(), Value::Bool(has_proof));
+                }
+            }
+        } else if tx.get("Message").is_some() {
+            summary.insert("tx_type".to_string(), Value::String("Message".to_string()));
+        }
+    }
+
+    // For Transfer transactions, extract different fields
+    if let Some(tx) = data.get("tx") {
+        if let Some(transfer_tx) = tx.get("TransactionTransfer") {
+            // Count inputs/outputs
+            if let Some(Value::Array(inputs)) = transfer_tx.get("inputs") {
+                summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
+            }
+            if let Some(Value::Array(outputs)) = transfer_tx.get("outputs") {
+                summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
+            }
+
+            // Get fee
+            if let Some(fee) = transfer_tx.get("fee") {
+                summary.insert("fee".to_string(), fee.clone());
+            }
+        }
+    }
+
+    Value::Object(summary)
+}
+
 /// API endpoint: POST /api/decode-transaction
 ///
 /// Example request:
@@ -322,10 +492,33 @@ async fn decode_transaction_endpoint(
 
     match decode_transaction(&req.tx_byte_code) {
         Ok(decoded_tx) => {
-            let (tx_type, mut data) = ("transaction", serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({})));
+            let mut data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
 
-            // Transform txid to hex, program to instructions, scalars to u64
+            // Extract summary before transformation (to access original structure)
+            let summary = extract_tx_summary(&data);
+
+            // Determine tx_type from data structure
+            let tx_type = if let Some(tx) = data.get("tx") {
+                if tx.get("TransactionTransfer").is_some() {
+                    "Transfer"
+                } else if tx.get("TransactionScript").is_some() {
+                    "Script"
+                } else if tx.get("Message").is_some() {
+                    "Message"
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            };
+
+            // Transform txid to hex, program to instructions, scalars to u64, etc.
             transform_decoded_tx(&mut data);
+
+            // Add summary to the data object
+            if let Value::Object(ref mut map) = data {
+                map.insert("summary".to_string(), summary);
+            }
 
             HttpResponse::Ok().json(DecodeResponse {
                 success: true,
