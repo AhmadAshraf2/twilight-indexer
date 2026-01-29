@@ -1,5 +1,9 @@
 -- Biggest native integer in Postgres is BIGINT (signed 64-bit).
 -- Switch to NUMERIC if you need beyond ~9e18.
+
+CREATE SCHEMA IF NOT EXISTS chain_indexer;
+SET search_path TO chain_indexer;
+
 CREATE TABLE IF NOT EXISTS transactions (
     t_address TEXT NOT NULL,
     block BIGINT NOT NULL,
@@ -64,10 +68,11 @@ CREATE TABLE IF NOT EXISTS gas_used_nyks (
 );
 
 CREATE TABLE IF NOT EXISTS qq_tx (
+    tx_hash TEXT NOT NULL,
     tx TEXT NOT NULL,
     block BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (tx, block)
+    PRIMARY KEY (tx_hash, block)
 );
 
 CREATE TABLE IF NOT EXISTS trading_tx (

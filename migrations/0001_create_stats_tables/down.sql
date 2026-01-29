@@ -1,3 +1,4 @@
+SET search_path TO chain_indexer;
 DROP TABLE IF EXISTS funds_moved;
 DROP TABLE IF EXISTS transaction_count;
 DROP Table IF EXISTS dark_burned_sats;
@@ -11,3 +12,5 @@ Drop TABLE IF EXISTS trading_tx;
 DROP TABLE IF EXISTS order_open_tx;
 DROP TABLE IF EXISTS order_close_tx;
 DROP INDEX IF EXISTS idx_addr_mappings_t_q_unique;
+-- Optional: drop schema if this app is being fully removed
+-- DROP SCHEMA IF EXISTS chain_indexer CASCADE;
