@@ -406,6 +406,144 @@ fn bytes_to_u64(bytes: &[Value]) -> Option<u64> {
     Some(u64::from_le_bytes(array_8))
 }
 
+/// Extract owner address from an input object
+fn extract_input_owner(input: &Value) -> Option<String> {
+    // Try Coin input
+    if let Some(coin) = input.get("input").and_then(|i| i.get("Coin")) {
+        if let Some(owner) = coin.get("out_coin").and_then(|c| c.get("owner")) {
+            return owner.as_str().map(|s| s.to_string());
+        }
+    }
+    // Try Memo input
+    if let Some(memo) = input.get("input").and_then(|i| i.get("Memo")) {
+        if let Some(owner) = memo.get("out_memo").and_then(|m| m.get("owner")) {
+            return owner.as_str().map(|s| s.to_string());
+        }
+    }
+    // Try State input
+    if let Some(state) = input.get("input").and_then(|i| i.get("State")) {
+        if let Some(owner) = state.get("out_state").and_then(|s| s.get("owner")) {
+            return owner.as_str().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Extract owner address from an output object
+fn extract_output_owner(output: &Value) -> Option<String> {
+    // Try Coin output
+    if let Some(coin) = output.get("output").and_then(|o| o.get("Coin")) {
+        return coin.get("owner").and_then(|o| o.as_str()).map(|s| s.to_string());
+    }
+    // Try Memo output
+    if let Some(memo) = output.get("output").and_then(|o| o.get("Memo")) {
+        return memo.get("owner").and_then(|o| o.as_str()).map(|s| s.to_string());
+    }
+    // Try State output
+    if let Some(state) = output.get("output").and_then(|o| o.get("State")) {
+        return state.get("owner").and_then(|o| o.as_str()).map(|s| s.to_string());
+    }
+    None
+}
+
+/// Extract script_address from Memo output
+fn extract_script_address(output: &Value) -> Option<String> {
+    output.get("output")
+        .and_then(|o| o.get("Memo"))
+        .and_then(|m| m.get("script_address"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Extract and interpret data field from Memo output
+fn extract_memo_data(output: &Value) -> Option<Value> {
+    let memo = output.get("output").and_then(|o| o.get("Memo"))?;
+    let data = memo.get("data")?;
+
+    if let Value::Array(data_arr) = data {
+        let mut interpreted = serde_json::Map::new();
+        let mut raw_values: Vec<Value> = Vec::new();
+
+        // Extract scalar values from the data array
+        for (idx, item) in data_arr.iter().enumerate() {
+            if let Some(scalar_obj) = item.get("Scalar") {
+                if let Some(scalar_inner) = scalar_obj.get("Scalar") {
+                    if let Some(u64_val) = bytes_to_u64_from_value(scalar_inner) {
+                        raw_values.push(serde_json::json!({
+                            "index": idx,
+                            "value": u64_val
+                        }));
+                    }
+                }
+            } else if let Some(commitment) = item.get("Commitment") {
+                raw_values.push(serde_json::json!({
+                    "index": idx,
+                    "type": "commitment",
+                    "value": commitment
+                }));
+            }
+        }
+
+        interpreted.insert("raw_data".to_string(), Value::Array(raw_values.clone()));
+
+        // Add interpretation hints based on common patterns
+        if raw_values.len() >= 2 {
+            interpreted.insert("hint".to_string(), Value::String(
+                "data[0] may be order_size, data[1] may be order_direction (0=long, 1=short)".to_string()
+            ));
+        }
+
+        return Some(Value::Object(interpreted));
+    }
+
+    None
+}
+
+/// Helper to convert Value array to u64
+fn bytes_to_u64_from_value(value: &Value) -> Option<u64> {
+    if let Value::Array(bytes) = value {
+        bytes_to_u64(bytes)
+    } else {
+        None
+    }
+}
+
+/// Extract UTXO info from an input object
+fn extract_input_utxo(input: &Value) -> Option<Value> {
+    // Try to find utxo in different input types
+    let input_data = input.get("input")?;
+
+    // Check Coin, Memo, State variants
+    let utxo = input_data.get("Coin").and_then(|c| c.get("utxo"))
+        .or_else(|| input_data.get("Memo").and_then(|m| m.get("utxo")))
+        .or_else(|| input_data.get("State").and_then(|s| s.get("utxo")))?;
+
+    let txid = utxo.get("txid")?;
+    let output_index = utxo.get("output_index")?;
+
+    // Convert txid bytes to hex
+    let txid_hex = if let Value::Array(bytes) = txid {
+        bytes_to_hex(bytes)
+    } else {
+        return None;
+    };
+
+    Some(serde_json::json!({
+        "txid": txid_hex,
+        "output_index": output_index
+    }))
+}
+
+/// Extract program instructions from Script transaction
+fn extract_program_instructions(script_tx: &Value) -> Option<Vec<String>> {
+    let program = script_tx.get("program")?;
+    if let Value::Array(bytes) = program {
+        Some(decode_program_bytes(bytes))
+    } else {
+        None
+    }
+}
+
 /// Extract transaction summary from the decoded transaction
 fn extract_tx_summary(data: &Value) -> Value {
     let mut summary = serde_json::Map::new();
@@ -414,25 +552,164 @@ fn extract_tx_summary(data: &Value) -> Value {
     if let Some(tx) = data.get("tx") {
         if tx.get("TransactionTransfer").is_some() {
             summary.insert("tx_type".to_string(), Value::String("Transfer".to_string()));
+
+            if let Some(transfer_tx) = tx.get("TransactionTransfer") {
+                // Count inputs/outputs
+                if let Some(Value::Array(inputs)) = transfer_tx.get("inputs") {
+                    summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
+
+                    // Extract from_address from first input
+                    if let Some(first_input) = inputs.first() {
+                        if let Some(addr) = extract_input_owner(first_input) {
+                            summary.insert("from_address".to_string(), Value::String(addr));
+                        }
+                    }
+
+                    // Extract all input UTXOs
+                    let input_utxos: Vec<Value> = inputs.iter()
+                        .filter_map(|i| extract_input_utxo(i))
+                        .collect();
+                    if !input_utxos.is_empty() {
+                        summary.insert("input_utxos".to_string(), Value::Array(input_utxos));
+                    }
+                }
+                if let Some(Value::Array(outputs)) = transfer_tx.get("outputs") {
+                    summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
+
+                    // Extract to_address from first output
+                    if let Some(first_output) = outputs.first() {
+                        if let Some(addr) = extract_output_owner(first_output) {
+                            summary.insert("to_address".to_string(), Value::String(addr));
+                        }
+                    }
+                }
+
+                // Get fee
+                if let Some(fee) = transfer_tx.get("fee") {
+                    summary.insert("fee".to_string(), fee.clone());
+                }
+            }
         } else if tx.get("TransactionScript").is_some() {
             summary.insert("tx_type".to_string(), Value::String("Script".to_string()));
 
             // Extract script-specific info
             if let Some(script_tx) = tx.get("TransactionScript") {
                 // Get input/output types
-                if let Some(in_type) = script_tx.get("in_type") {
-                    summary.insert("input_type".to_string(), in_type.clone());
-                }
-                if let Some(out_type) = script_tx.get("out_type") {
-                    summary.insert("output_type".to_string(), out_type.clone());
+                let in_type = script_tx.get("in_type").and_then(|v| v.as_str()).unwrap_or("");
+                let out_type = script_tx.get("out_type").and_then(|v| v.as_str()).unwrap_or("");
+
+                summary.insert("input_type".to_string(), Value::String(in_type.to_string()));
+                summary.insert("output_type".to_string(), Value::String(out_type.to_string()));
+
+                // Detect order operation type
+                let order_operation = if in_type == "Coin" && out_type == "Memo" {
+                    "order_open"
+                } else if in_type == "Memo" && out_type == "Coin" {
+                    "order_close"
+                } else if in_type == "State" && out_type == "State" {
+                    "contract_call"
+                } else {
+                    "other"
+                };
+                summary.insert("order_operation".to_string(), Value::String(order_operation.to_string()));
+
+                // Add order operation description
+                let operation_desc = match order_operation {
+                    "order_open" => "Opening a new order: locking coins into a contract memo",
+                    "order_close" => "Closing an order: unlocking coins from a contract memo",
+                    "contract_call" => "Calling a contract: updating contract state",
+                    _ => "Other script operation",
+                };
+                summary.insert("order_operation_description".to_string(), Value::String(operation_desc.to_string()));
+
+                // Extract program instructions
+                if let Some(instructions) = extract_program_instructions(script_tx) {
+                    let instr_values: Vec<Value> = instructions.into_iter()
+                        .map(Value::String)
+                        .collect();
+                    summary.insert("program".to_string(), Value::Array(instr_values));
                 }
 
-                // Count inputs/outputs
+                // Count inputs/outputs and extract addresses
                 if let Some(Value::Array(inputs)) = script_tx.get("inputs") {
                     summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
+
+                    // Extract from_address from first input
+                    if let Some(first_input) = inputs.first() {
+                        if let Some(addr) = extract_input_owner(first_input) {
+                            summary.insert("from_address".to_string(), Value::String(addr));
+                        }
+                    }
+
+                    // Extract all input UTXOs
+                    let input_utxos: Vec<Value> = inputs.iter()
+                        .filter_map(|i| extract_input_utxo(i))
+                        .collect();
+                    if !input_utxos.is_empty() {
+                        summary.insert("input_utxos".to_string(), Value::Array(input_utxos));
+                    }
                 }
                 if let Some(Value::Array(outputs)) = script_tx.get("outputs") {
                     summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
+
+                    // Extract to_address from first output
+                    if let Some(first_output) = outputs.first() {
+                        if let Some(addr) = extract_output_owner(first_output) {
+                            summary.insert("to_address".to_string(), Value::String(addr));
+                        }
+
+                        // Extract script_address from Memo output (for order_open)
+                        if let Some(script_addr) = extract_script_address(first_output) {
+                            summary.insert("script_address".to_string(), Value::String(script_addr));
+                        }
+
+                        // Extract and interpret memo data (for order_open)
+                        if order_operation == "order_open" {
+                            if let Some(memo_data) = extract_memo_data(first_output) {
+                                summary.insert("order_data".to_string(), memo_data);
+                            }
+                        }
+                    }
+                }
+
+                // For order_close, extract memo data from input
+                if order_operation == "order_close" {
+                    if let Some(Value::Array(inputs)) = script_tx.get("inputs") {
+                        if let Some(first_input) = inputs.first() {
+                            // Extract from Memo input
+                            if let Some(memo) = first_input.get("input").and_then(|i| i.get("Memo")) {
+                                if let Some(out_memo) = memo.get("out_memo") {
+                                    if let Some(script_addr) = out_memo.get("script_address").and_then(|s| s.as_str()) {
+                                        summary.insert("script_address".to_string(), Value::String(script_addr.to_string()));
+                                    }
+                                    // Extract data from input memo
+                                    if let Some(data) = out_memo.get("data") {
+                                        if let Value::Array(data_arr) = data {
+                                            let mut raw_values: Vec<Value> = Vec::new();
+                                            for (idx, item) in data_arr.iter().enumerate() {
+                                                if let Some(scalar_obj) = item.get("Scalar") {
+                                                    if let Some(scalar_inner) = scalar_obj.get("Scalar") {
+                                                        if let Some(u64_val) = bytes_to_u64_from_value(scalar_inner) {
+                                                            raw_values.push(serde_json::json!({
+                                                                "index": idx,
+                                                                "value": u64_val
+                                                            }));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if !raw_values.is_empty() {
+                                                summary.insert("order_data".to_string(), serde_json::json!({
+                                                    "raw_data": raw_values,
+                                                    "hint": "data[0] may be order_size, data[1] may be order_direction (0=long, 1=short)"
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Get fee
@@ -453,24 +730,7 @@ fn extract_tx_summary(data: &Value) -> Value {
             }
         } else if tx.get("Message").is_some() {
             summary.insert("tx_type".to_string(), Value::String("Message".to_string()));
-        }
-    }
-
-    // For Transfer transactions, extract different fields
-    if let Some(tx) = data.get("tx") {
-        if let Some(transfer_tx) = tx.get("TransactionTransfer") {
-            // Count inputs/outputs
-            if let Some(Value::Array(inputs)) = transfer_tx.get("inputs") {
-                summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
-            }
-            if let Some(Value::Array(outputs)) = transfer_tx.get("outputs") {
-                summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
-            }
-
-            // Get fee
-            if let Some(fee) = transfer_tx.get("fee") {
-                summary.insert("fee".to_string(), fee.clone());
-            }
+            summary.insert("description".to_string(), Value::String("Burn/Bridge operation".to_string()));
         }
     }
 
