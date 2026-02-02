@@ -335,12 +335,32 @@ fn transform_state_data(data: &mut serde_json::Value) {
     if let serde_json::Value::Array(arr) = data {
         for (idx, item) in arr.iter_mut().enumerate() {
             if let serde_json::Value::Object(obj) = item {
-                // Check if this is a Commitment and extract the hex value
-                if let Some(commitment) = obj.get("Commitment") {
-                    let hex_value = if let Some(closed) = commitment.get("Closed") {
-                        closed.as_str().unwrap_or("").to_string()
+                // Check if this is a Commitment and extract the hex value (check both cases)
+                if let Some(commitment) = obj.get("Commitment").or_else(|| obj.get("commitment")) {
+                    // Try both "Closed" and "closed" keys
+                    let hex_value = if let Some(closed) = commitment.get("Closed").or_else(|| commitment.get("closed")) {
+                        // Check if it's already a string (hex) or still a byte array
+                        if let Some(s) = closed.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = closed.as_array() {
+                            // Convert byte array to hex
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            "".to_string()
+                        }
                     } else {
-                        "".to_string()
+                        // If no Closed key, the commitment itself might be the value
+                        if let Some(s) = commitment.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = commitment.as_array() {
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            commitment.to_string()
+                        }
                     };
 
                     let label = match idx {
@@ -407,12 +427,33 @@ fn transform_memo_data(data: &mut serde_json::Value) {
                         }
                     }
                 }
-                // Handle Commitment values - extract the hex value
-                else if let Some(commitment) = obj.get("Commitment") {
-                    let hex_value = if let Some(closed) = commitment.get("Closed") {
-                        closed.as_str().unwrap_or("").to_string()
+                // Handle Commitment values - extract the hex value (check both cases)
+                else if let Some(commitment) = obj.get("Commitment").or_else(|| obj.get("commitment")) {
+                    // Try both "Closed" and "closed" keys
+                    let hex_value = if let Some(closed) = commitment.get("Closed").or_else(|| commitment.get("closed")) {
+                        // Check if it's already a string (hex) or still a byte array
+                        if let Some(s) = closed.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = closed.as_array() {
+                            // Convert byte array to hex
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            "".to_string()
+                        }
                     } else {
-                        "".to_string()
+                        // If no Closed key, the commitment itself might be the value
+                        if let Some(s) = commitment.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = commitment.as_array() {
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            // Return the whole commitment object as string for debugging
+                            commitment.to_string()
+                        }
                     };
 
                     match idx {
