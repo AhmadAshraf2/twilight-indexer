@@ -520,16 +520,67 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
-            // Convert Dleq value_proof arrays to hex strings
+            // Convert Dleq value_proof arrays to hex strings (handles nested arrays)
             if let Some(serde_json::Value::Array(dleq)) = map.get_mut("Dleq") {
                 for item in dleq.iter_mut() {
-                    // Convert byte arrays to hex, skip already converted strings
-                    if item.is_array() {
+                    if let serde_json::Value::Array(inner) = item {
+                        // Check if this is a nested array of arrays (like in sender_account_dleq)
+                        if !inner.is_empty() {
+                            if let Some(first) = inner.first() {
+                                if first.is_array() {
+                                    // Nested array - convert each inner array to hex
+                                    for nested_item in inner.iter_mut() {
+                                        if let Some(hex) = bytes_array_to_hex(nested_item) {
+                                            *nested_item = serde_json::Value::String(hex);
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        // Direct byte array
                         if let Some(hex) = bytes_array_to_hex(item) {
                             if !hex.is_empty() {
                                 *item = serde_json::Value::String(hex);
                             }
                         }
+                    }
+                }
+            }
+
+            // Convert comm.c and comm.d byte arrays to hex strings (in proof accounts)
+            if let Some(serde_json::Value::Object(comm_map)) = map.get_mut("comm") {
+                if let Some(c) = comm_map.get("c") {
+                    if let Some(hex) = bytes_array_to_hex(c) {
+                        comm_map.insert("c".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(d) = comm_map.get("d") {
+                    if let Some(hex) = bytes_array_to_hex(d) {
+                        comm_map.insert("d".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert pk.gr and pk.grsk byte arrays to hex strings (in proof accounts)
+            if let Some(serde_json::Value::Object(pk_map)) = map.get_mut("pk") {
+                if let Some(gr) = pk_map.get("gr") {
+                    if let Some(hex) = bytes_array_to_hex(gr) {
+                        pk_map.insert("gr".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(grsk) = pk_map.get("grsk") {
+                    if let Some(hex) = bytes_array_to_hex(grsk) {
+                        pk_map.insert("grsk".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert range_proof byte arrays to hex strings
+            if let Some(serde_json::Value::Array(range_proof)) = map.get_mut("range_proof") {
+                for item in range_proof.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
                     }
                 }
             }
