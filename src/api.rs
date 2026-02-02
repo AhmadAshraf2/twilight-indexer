@@ -569,6 +569,29 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
+            // Convert Proof witness Dlog arrays to hex strings
+            if let Some(serde_json::Value::Object(proof_map)) = map.get_mut("Proof") {
+                if let Some(serde_json::Value::Array(dlog)) = proof_map.get_mut("Dlog") {
+                    for item in dlog.iter_mut() {
+                        if let serde_json::Value::Array(inner) = item {
+                            // Check if this is a nested array (array containing a byte array)
+                            if inner.len() == 1 {
+                                if let Some(arr) = inner.first() {
+                                    if let Some(hex) = bytes_array_to_hex(arr) {
+                                        *item = serde_json::Value::String(hex);
+                                    }
+                                }
+                            } else if !inner.is_empty() && inner.first().map(|v| v.is_u64()).unwrap_or(false) {
+                                // Direct byte array
+                                if let Some(hex) = bytes_array_to_hex(item) {
+                                    *item = serde_json::Value::String(hex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Convert comm.c and comm.d byte arrays to hex strings (in proof accounts)
             if let Some(serde_json::Value::Object(comm_map)) = map.get_mut("comm") {
                 if let Some(c) = comm_map.get("c") {
