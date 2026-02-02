@@ -17,6 +17,8 @@ pub struct DecodeRequest {
 pub struct DecodeRawResponse {
     pub success: bool,
     pub tx_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<serde_json::Value>,
     pub data: serde_json::Value,
 }
 
@@ -509,6 +511,29 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
+            // Convert witness zero_proof byte arrays to hex strings
+            if let Some(serde_json::Value::Array(zero_proof)) = map.get_mut("zero_proof") {
+                for item in zero_proof.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
+                    }
+                }
+            }
+
+            // Convert Dleq value_proof arrays to hex strings
+            if let Some(serde_json::Value::Array(dleq)) = map.get_mut("Dleq") {
+                for item in dleq.iter_mut() {
+                    // Convert byte arrays to hex, skip already converted strings
+                    if item.is_array() {
+                        if let Some(hex) = bytes_array_to_hex(item) {
+                            if !hex.is_empty() {
+                                *item = serde_json::Value::String(hex);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Transform State input/output data with meaningful labels
             if let Some(serde_json::Value::Object(state_map)) = map.get_mut("State") {
                 if let Some(data) = state_map.get_mut("data") {
@@ -646,14 +671,10 @@ async fn decode_transaction_raw_endpoint(
             // Transform byte arrays (proof, sign, value_proof) to hex strings
             transform_byte_arrays(&mut data);
 
-            // Add summary to data
-            if let serde_json::Value::Object(ref mut map) = data {
-                map.insert("summary".to_string(), summary);
-            }
-
             HttpResponse::Ok().json(DecodeRawResponse {
                 success: true,
                 tx_type: tx_type.to_string(),
+                summary: Some(summary),
                 data,
             })
         }
@@ -703,6 +724,7 @@ async fn decode_zkos_transaction_raw_endpoint(
             HttpResponse::Ok().json(DecodeRawResponse {
                 success: true,
                 tx_type: tx_type.to_string(),
+                summary: None,
                 data,
             })
         }
