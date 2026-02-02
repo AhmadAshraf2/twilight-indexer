@@ -1,7 +1,6 @@
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use crate::quis_quis_tx::decode_transaction;
 use crate::db;
 use utoipa::{OpenApi, ToSchema};
@@ -13,9 +12,9 @@ pub struct DecodeRequest {
     pub tx_byte_code: String,
 }
 
-/// Response for successful transaction decode
+/// Response for successful transaction decode (raw)
 #[derive(Debug, Serialize, ToSchema)]
-pub struct DecodeResponse {
+pub struct DecodeRawResponse {
     pub success: bool,
     pub tx_type: String,
     pub data: serde_json::Value,
@@ -130,741 +129,376 @@ pub struct AddressAllDataResponse {
     pub lit_burned_sats: Vec<LitBurnedSatsData>,
 }
 
-/// Convert opcode byte to instruction name
-fn opcode_to_name(opcode: u8) -> &'static str {
-    match opcode {
-        0x00 => "push",
-        0x01 => "program",
-        0x02 => "drop",
-        0x03 => "dup",
-        0x04 => "roll",
-        0x05 => "scalar",
-        0x06 => "commit",
-        0x07 => "alloc",
-        0x0a => "expr",
-        0x0b => "neg",
-        0x0c => "add",
-        0x0d => "mul",
-        0x0e => "eq",
-        0x0f => "range",
-        0x10 => "and",
-        0x11 => "or",
-        0x12 => "not",
-        0x13 => "verify",
-        0x14 => "unblind",
-        0x15 => "issue",
-        0x16 => "borrow",
-        0x17 => "retire",
-        0x19 => "fee",
-        0x1a => "input",
-        0x1b => "output",
-        0x1c => "contract",
-        0x1d => "log",
-        0x1e => "call",
-        0x1f => "signtx",
-        0x20 => "signid",
-        0x21 => "signtag",
-        0x22 => "inputcoin",
-        0x23 => "outputcoin",
-        _ => "ext",
+/// Known program types from twilight-client-sdk/relayerprogram.json
+const PROGRAM_TYPES: &[(&str, &str)] = &[
+    ("060a0402000000060a0e0401000000060a0402000000060a0e1013", "RelayerInitializer"),
+    ("020403000000060a0401000000050d0401000000060a0d0401000000050e13", "CreateTraderOrder"),
+    ("040300000002040300000002040a0000000603000000000a0b04070000000603000000000a04020000000c04020000000a0b04020000000a0c0404000000060a0b0c0302000000050d0307000000050d0407000000050403000000050b0c0406000000050d0407000000050d0403000000050c0e04010000000b0403000000060a0c0402000000060a0e101302", "SettleTraderOrder"),
+    ("0401000000060a0302000000060a0306000000060a0c0e0403000000060a0304000000060a0307000000060a0c0e100401000000050402000000060a0405000000060a0d0c0402000000060a0403000000060a0d0e1013", "CreateLendOrder"),
+    ("050304000000060a0307000000060a0d0c0302000000060a0306000000060a0d0e0406000000060a0b0403000000060a0c0402000000060a0e100401000000060a0402000000060a0403000000060a0b0c0e101302", "SettleLendOrder"),
+    ("0202020202060a0401000000060a0407000000060a0c0e130202020202", "LiquidateOrder"),
+    ("040300000002040300000002040a0000000603000000000a0b04070000000603000000000a04020000000c04020000000a0b04020000000a0c0404000000060a0c0302000000050d0307000000050d0407000000050403000000050b0c0406000000050d0407000000050d0403000000050c0e04010000000b0403000000060a0c0402000000060a0e101302", "SettleTraderOrderNegativeMarginDifference"),
+];
+
+/// Convert program bytes array to hex string
+fn program_bytes_to_hex(program: &serde_json::Value) -> Option<String> {
+    if let serde_json::Value::Array(bytes) = program {
+        let hex: String = bytes.iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+            .collect();
+        Some(hex)
+    } else {
+        None
     }
 }
 
-/// Check if opcode has a u32 argument
-fn opcode_has_arg(opcode: u8) -> bool {
-    matches!(opcode, 0x03 | 0x04 | 0x1b | 0x1c | 0x22 | 0x23) // dup, roll, output, contract, inputcoin, outputcoin
+/// Match program hex to known program type
+fn get_program_type(program_hex: &str) -> &'static str {
+    for (hex, name) in PROGRAM_TYPES {
+        if *hex == program_hex {
+            return name;
+        }
+    }
+    "Unknown"
 }
 
-/// Check if opcode has variable-length data (push, program)
-fn opcode_has_data(opcode: u8) -> bool {
-    matches!(opcode, 0x00 | 0x01) // push, program
+/// Get order type based on program type
+fn get_order_type(program_type: &str) -> &'static str {
+    match program_type {
+        "RelayerInitializer" => "initialize_contract",
+        "CreateTraderOrder" | "CreateLendOrder" => "order_open",
+        "SettleTraderOrder" | "SettleLendOrder" | "LiquidateOrder" | "SettleTraderOrderNegativeMarginDifference" => "order_close",
+        _ => "unknown"
+    }
 }
 
-/// Convert program bytes to human-readable instructions
-fn decode_program_bytes(bytes: &[Value]) -> Vec<String> {
-    let mut instructions = Vec::new();
+/// Extract scalar u64 value from Memo data array at a given index
+fn extract_scalar_u64_from_data(data: &serde_json::Value, index: usize) -> Option<u64> {
+    let arr = data.as_array()?;
+    let item = arr.get(index)?;
+    let scalar_obj = item.get("Scalar")?;
+    let scalar_inner = scalar_obj.get("Scalar")?;
+    let bytes = scalar_inner.as_array()?;
+    // Convert first 8 bytes to u64 little-endian
+    let mut arr_8 = [0u8; 8];
+    for (i, byte_val) in bytes.iter().take(8).enumerate() {
+        arr_8[i] = byte_val.as_u64()? as u8;
+    }
+    Some(u64::from_le_bytes(arr_8))
+}
+
+/// Decode program bytes into human-readable opcode list
+fn decode_program_opcodes(program: &serde_json::Value) -> Vec<String> {
+    let bytes: Vec<u8> = match program.as_array() {
+        Some(arr) => arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect(),
+        None => return vec![],
+    };
+
+    let mut opcodes = Vec::new();
     let mut i = 0;
 
-    // Convert Value array to u8 array
-    let byte_vec: Vec<u8> = bytes.iter()
-        .filter_map(|v| v.as_u64().map(|n| n as u8))
-        .collect();
+    while i < bytes.len() {
+        let opcode = bytes[i];
+        i += 1;
 
-    while i < byte_vec.len() {
-        let opcode = byte_vec[i];
-        let name = opcode_to_name(opcode);
+        let name = match opcode {
+            0x00 => {
+                // Push: read LE32 length, then skip data
+                if i + 4 <= bytes.len() {
+                    let len = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+                    i += 4 + len;
+                    format!("push:{}", len)
+                } else {
+                    "push".to_string()
+                }
+            }
+            0x01 => {
+                // Program: read LE32 length, then skip data
+                if i + 4 <= bytes.len() {
+                    let len = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+                    i += 4 + len;
+                    format!("program:{}", len)
+                } else {
+                    "program".to_string()
+                }
+            }
+            0x02 => "drop".to_string(),
+            0x03 => {
+                // Dup: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("dup:{}", idx)
+                } else {
+                    "dup".to_string()
+                }
+            }
+            0x04 => {
+                // Roll: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("roll:{}", idx)
+                } else {
+                    "roll".to_string()
+                }
+            }
+            0x05 => "scalar".to_string(),
+            0x06 => "commit".to_string(),
+            0x07 => "alloc".to_string(),
+            0x0a => "expr".to_string(),
+            0x0b => "neg".to_string(),
+            0x0c => "add".to_string(),
+            0x0d => "mul".to_string(),
+            0x0e => "eq".to_string(),
+            0x0f => "range".to_string(),
+            0x10 => "and".to_string(),
+            0x11 => "or".to_string(),
+            0x12 => "not".to_string(),
+            0x13 => "verify".to_string(),
+            0x14 => "unblind".to_string(),
+            0x15 => "issue".to_string(),
+            0x16 => "borrow".to_string(),
+            0x17 => "retire".to_string(),
+            0x19 => "fee".to_string(),
+            0x1a => "input".to_string(),
+            0x1b => {
+                // Output: read LE32 count
+                if i + 4 <= bytes.len() {
+                    let k = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("output:{}", k)
+                } else {
+                    "output".to_string()
+                }
+            }
+            0x1c => {
+                // Contract: read LE32 count
+                if i + 4 <= bytes.len() {
+                    let k = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("contract:{}", k)
+                } else {
+                    "contract".to_string()
+                }
+            }
+            0x1d => "log".to_string(),
+            0x1e => "call".to_string(),
+            0x1f => "signtx".to_string(),
+            0x20 => "signid".to_string(),
+            0x21 => "signtag".to_string(),
+            0x22 => {
+                // InputCoin: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("inputcoin:{}", idx)
+                } else {
+                    "inputcoin".to_string()
+                }
+            }
+            0x23 => {
+                // OutputCoin: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("outputcoin:{}", idx)
+                } else {
+                    "outputcoin".to_string()
+                }
+            }
+            _ => format!("ext:{:#04x}", opcode),
+        };
 
-        if opcode_has_data(opcode) {
-            // push or program: read 4-byte length, then skip data
-            if i + 5 <= byte_vec.len() {
-                let len = u32::from_le_bytes([
-                    byte_vec[i + 1],
-                    byte_vec[i + 2],
-                    byte_vec[i + 3],
-                    byte_vec[i + 4],
-                ]) as usize;
-                instructions.push(format!("{}:{}", name, len));
-                i += 5 + len;
-            } else {
-                instructions.push(name.to_string());
-                i += 1;
+        opcodes.push(name);
+    }
+
+    opcodes
+}
+
+/// Convert byte array Value to hex string
+fn bytes_array_to_hex(value: &serde_json::Value) -> Option<String> {
+    if let serde_json::Value::Array(bytes) = value {
+        let hex: String = bytes.iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+            .collect();
+        Some(hex)
+    } else {
+        None
+    }
+}
+
+/// Transform STATE data array to show meaningful labels for commitments
+fn transform_state_data(data: &mut serde_json::Value) {
+    if let serde_json::Value::Array(arr) = data {
+        for (idx, item) in arr.iter_mut().enumerate() {
+            if let serde_json::Value::Object(obj) = item {
+                // Check if this is a Commitment
+                if obj.contains_key("Commitment") {
+                    let label = match idx {
+                        0 => "total_locked_value",
+                        1 => "total_pool_share",
+                        _ => "commitment",
+                    };
+                    *item = serde_json::json!({
+                        label: "(encrypted)"
+                    });
+                }
             }
-        } else if opcode_has_arg(opcode) {
-            // Instructions with u32 argument
-            if i + 5 <= byte_vec.len() {
-                let arg = u32::from_le_bytes([
-                    byte_vec[i + 1],
-                    byte_vec[i + 2],
-                    byte_vec[i + 3],
-                    byte_vec[i + 4],
-                ]);
-                instructions.push(format!("{}:{}", name, arg));
-                i += 5;
-            } else {
-                instructions.push(name.to_string());
-                i += 1;
-            }
-        } else {
-            instructions.push(name.to_string());
-            i += 1;
         }
     }
-
-    instructions
 }
 
-/// Convert byte array to hex string
-fn bytes_to_hex(bytes: &[Value]) -> String {
-    bytes.iter()
-        .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
-        .collect()
-}
+/// Transform MEMO data array to show meaningful labels and values
+fn transform_memo_data(data: &mut serde_json::Value) {
+    if let serde_json::Value::Array(arr) = data {
+        let mut new_data = Vec::new();
 
-/// Get description for input/output type
-fn get_type_description(type_name: &str) -> &'static str {
-    match type_name {
-        "Coin" => "Spendable coin output with encrypted value",
-        "Memo" => "Script-locked memo output for order data",
-        "State" => "Contract state output",
-        _ => "Unknown output type",
-    }
-}
+        for (idx, item) in arr.iter().enumerate() {
+            if let serde_json::Value::Object(obj) = item {
+                // Handle Scalar values
+                if let Some(scalar_obj) = obj.get("Scalar") {
+                    if let Some(scalar_inner) = scalar_obj.get("Scalar") {
+                        if let Some(bytes) = scalar_inner.as_array() {
+                            // Convert first 8 bytes to u64 little-endian
+                            let mut arr_8 = [0u8; 8];
+                            for (i, byte_val) in bytes.iter().take(8).enumerate() {
+                                if let Some(b) = byte_val.as_u64() {
+                                    arr_8[i] = b as u8;
+                                }
+                            }
+                            let u64_val = u64::from_le_bytes(arr_8);
 
-/// Transform the JSON to convert txid, program, and scalars to human-readable formats
-fn transform_decoded_tx(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            // Convert txid byte arrays to hex strings
-            if map.contains_key("txid") {
-                if let Some(Value::Array(bytes)) = map.get("txid") {
-                    let hex_str = bytes_to_hex(bytes);
-                    map.insert("txid".to_string(), Value::String(hex_str));
-                }
-            }
-
-            // Convert program byte arrays to instruction lists
-            if map.contains_key("program") {
-                if let Some(Value::Array(bytes)) = map.get("program") {
-                    let instructions = decode_program_bytes(bytes);
-                    map.insert("program".to_string(), Value::Array(
-                        instructions.into_iter().map(Value::String).collect()
-                    ));
-                }
-            }
-
-            // Convert encrypt.c and encrypt.d byte arrays to hex
-            if map.contains_key("encrypt") {
-                if let Some(Value::Object(encrypt_map)) = map.get_mut("encrypt") {
-                    if let Some(Value::Array(c_bytes)) = encrypt_map.get("c") {
-                        let hex_str = bytes_to_hex(c_bytes);
-                        encrypt_map.insert("c".to_string(), Value::String(hex_str));
-                    }
-                    if let Some(Value::Array(d_bytes)) = encrypt_map.get("d") {
-                        let hex_str = bytes_to_hex(d_bytes);
-                        encrypt_map.insert("d".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert commitment (Closed variant) to hex
-            if map.contains_key("commitment") {
-                if let Some(Value::Object(commit_map)) = map.get_mut("commitment") {
-                    if let Some(Value::Array(closed_bytes)) = commit_map.get("Closed") {
-                        let hex_str = bytes_to_hex(closed_bytes);
-                        commit_map.insert("Closed".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert proof byte array to hex
-            if map.contains_key("proof") {
-                if let Some(Value::Array(bytes)) = map.get("proof") {
-                    let hex_str = bytes_to_hex(bytes);
-                    map.insert("proof".to_string(), Value::String(hex_str));
-                }
-            }
-
-            // Convert witness.sign to hex
-            if map.contains_key("witness") {
-                if let Some(Value::Object(witness_map)) = map.get_mut("witness") {
-                    if let Some(Value::Array(sign_bytes)) = witness_map.get("sign") {
-                        let hex_str = bytes_to_hex(sign_bytes);
-                        witness_map.insert("sign".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert call_proof.path.neighbors to hex array
-            if map.contains_key("call_proof") {
-                if let Some(Value::Object(call_proof_map)) = map.get_mut("call_proof") {
-                    if let Some(Value::Object(path_map)) = call_proof_map.get_mut("path") {
-                        if let Some(Value::Array(neighbors)) = path_map.get("neighbors") {
-                            let hex_neighbors: Vec<Value> = neighbors.iter()
-                                .filter_map(|n| {
-                                    if let Value::Array(bytes) = n {
-                                        Some(Value::String(bytes_to_hex(bytes)))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            path_map.insert("neighbors".to_string(), Value::Array(hex_neighbors));
+                            match idx {
+                                0 => {
+                                    // Position size (divided by 10^8)
+                                    let pos_size = u64_val as f64 / 100_000_000.0;
+                                    new_data.push(serde_json::json!({
+                                        "position_size": pos_size
+                                    }));
+                                }
+                                2 => {
+                                    // Entry price
+                                    new_data.push(serde_json::json!({
+                                        "entry_price": u64_val
+                                    }));
+                                }
+                                3 => {
+                                    // Order side (1 = short, other = long)
+                                    let side = if u64_val == 1 { "short" } else { "long" };
+                                    new_data.push(serde_json::json!({
+                                        "order_side": side
+                                    }));
+                                }
+                                _ => {
+                                    new_data.push(serde_json::json!({
+                                        "scalar": u64_val
+                                    }));
+                                }
+                            }
                         }
                     }
-                    // Convert network bytes to hex if present
-                    if let Some(Value::Array(network_bytes)) = call_proof_map.get("network") {
-                        let hex_str = bytes_to_hex(network_bytes);
-                        call_proof_map.insert("network".to_string(), Value::String(hex_str));
+                }
+                // Handle Commitment values
+                else if obj.contains_key("Commitment") {
+                    match idx {
+                        1 => {
+                            new_data.push(serde_json::json!({
+                                "leverage": "(encrypted)"
+                            }));
+                        }
+                        _ => {
+                            new_data.push(serde_json::json!({
+                                "commitment": "(encrypted)"
+                            }));
+                        }
                     }
                 }
-            }
-
-            // Add description for in_type
-            if let Some(Value::String(in_type)) = map.get("in_type").cloned() {
-                let desc = get_type_description(&in_type);
-                map.insert("in_type_description".to_string(), Value::String(desc.to_string()));
-            }
-
-            // Add description for out_type
-            if let Some(Value::String(out_type)) = map.get("out_type").cloned() {
-                let desc = get_type_description(&out_type);
-                map.insert("out_type_description".to_string(), Value::String(desc.to_string()));
-            }
-
-            // Format timebounds with description
-            if let Some(Value::Number(tb)) = map.get("timebounds").cloned() {
-                if let Some(tb_val) = tb.as_u64() {
-                    map.insert("timebounds".to_string(), serde_json::json!({
-                        "value": tb_val,
-                        "description": "Block height or relative timelock"
-                    }));
-                }
-            }
-
-            // Convert Scalar objects to u64 values
-            if let Some(Value::Object(scalar_map)) = map.get("Scalar") {
-                if let Some(Value::Array(bytes)) = scalar_map.get("Scalar") {
-                    if let Some(u64_value) = bytes_to_u64(bytes) {
-                        *value = serde_json::json!({
-                            "scalar": u64_value
-                        });
-                        return;
-                    }
-                }
-            }
-
-            // Recursively process all values in the object
-            for (_, v) in map.iter_mut() {
-                transform_decoded_tx(v);
             }
         }
-        Value::Array(arr) => {
-            // Recursively process all elements in the array
+
+        *data = serde_json::Value::Array(new_data);
+    }
+}
+
+/// Transform byte arrays in the decoded transaction to hex strings
+fn transform_byte_arrays(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Convert txid field in utxo
+            if let Some(txid) = map.get("txid") {
+                if let Some(hex) = bytes_array_to_hex(txid) {
+                    map.insert("txid".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert proof field
+            if let Some(proof) = map.get("proof") {
+                if let Some(hex) = bytes_array_to_hex(proof) {
+                    map.insert("proof".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert sign field in witness
+            if let Some(sign) = map.get("sign") {
+                if let Some(hex) = bytes_array_to_hex(sign) {
+                    map.insert("sign".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert value_proof.Dleq arrays to hex
+            if let Some(serde_json::Value::Object(vp_map)) = map.get_mut("value_proof") {
+                if let Some(serde_json::Value::Array(dleq)) = vp_map.get_mut("Dleq") {
+                    for item in dleq.iter_mut() {
+                        if let serde_json::Value::Array(inner) = item {
+                            if inner.len() == 1 {
+                                if let Some(arr) = inner.first() {
+                                    if let Some(hex) = bytes_array_to_hex(arr) {
+                                        *item = serde_json::Value::String(hex);
+                                    }
+                                }
+                            } else if !inner.is_empty() && inner.first().map(|v| v.is_u64()).unwrap_or(false) {
+                                // Direct byte array
+                                if let Some(hex) = bytes_array_to_hex(item) {
+                                    *item = serde_json::Value::String(hex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Transform State input/output data with meaningful labels
+            if let Some(serde_json::Value::Object(state_map)) = map.get_mut("State") {
+                if let Some(data) = state_map.get_mut("data") {
+                    transform_state_data(data);
+                }
+            }
+
+            // Transform Memo input/output data with meaningful labels
+            if let Some(serde_json::Value::Object(memo_map)) = map.get_mut("Memo") {
+                if let Some(data) = memo_map.get_mut("data") {
+                    transform_memo_data(data);
+                }
+            }
+
+            // Recursively transform nested objects
+            for (_, v) in map.iter_mut() {
+                transform_byte_arrays(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                transform_decoded_tx(item);
+                transform_byte_arrays(item);
             }
         }
         _ => {}
     }
 }
 
-/// Convert a byte array (first 8 bytes) to u64 using little-endian
-fn bytes_to_u64(bytes: &[Value]) -> Option<u64> {
-    if bytes.len() < 8 {
-        return None;
-    }
-
-    let mut array_8 = [0u8; 8];
-    for (i, byte_value) in bytes.iter().take(8).enumerate() {
-        if let Some(byte) = byte_value.as_u64() {
-            array_8[i] = byte as u8;
-        } else {
-            return None;
-        }
-    }
-
-    Some(u64::from_le_bytes(array_8))
-}
-
-/// Helper to convert Value array to u64
-fn bytes_to_u64_from_value(value: &Value) -> Option<u64> {
-    if let Value::Array(bytes) = value {
-        bytes_to_u64(bytes)
-    } else {
-        None
-    }
-}
-
-/// Extract full input info including UTXO, owner, and type
-fn extract_full_input_info(input: &Value, index: usize) -> Option<Value> {
-    let input_data = input.get("input")?;
-    let in_type = input.get("in_type").and_then(|t| t.as_str()).unwrap_or("unknown");
-
-    // Determine which variant and extract data
-    let (utxo, owner) = if let Some(coin) = input_data.get("Coin") {
-        let utxo = coin.get("utxo")?;
-        let owner = coin.get("out_coin").and_then(|c| c.get("owner")).and_then(|o| o.as_str());
-        (utxo, owner)
-    } else if let Some(memo) = input_data.get("Memo") {
-        let utxo = memo.get("utxo")?;
-        let owner = memo.get("out_memo").and_then(|m| m.get("owner")).and_then(|o| o.as_str());
-        (utxo, owner)
-    } else if let Some(state) = input_data.get("State") {
-        let utxo = state.get("utxo")?;
-        let owner = state.get("out_state").and_then(|s| s.get("owner")).and_then(|o| o.as_str());
-        (utxo, owner)
-    } else {
-        return None;
-    };
-
-    let txid = utxo.get("txid")?;
-    let output_index = utxo.get("output_index")?;
-
-    // Convert txid bytes to hex
-    let txid_hex = if let Value::Array(bytes) = txid {
-        bytes_to_hex(bytes)
-    } else {
-        return None;
-    };
-
-    let mut result = serde_json::json!({
-        "index": index,
-        "type": in_type,
-        "utxo": {
-            "txid": txid_hex,
-            "output_index": output_index
-        }
-    });
-
-    if let Some(owner_str) = owner {
-        result["owner"] = Value::String(owner_str.to_string());
-    }
-
-    Some(result)
-}
-
-/// Extract full output info including owner and type
-fn extract_full_output_info(output: &Value, index: usize) -> Option<Value> {
-    let output_data = output.get("output")?;
-    let out_type = output.get("out_type").and_then(|t| t.as_str()).unwrap_or("unknown");
-
-    let mut result = serde_json::json!({
-        "index": index,
-        "type": out_type
-    });
-
-    // Extract owner and type-specific data
-    if let Some(coin) = output_data.get("Coin") {
-        if let Some(owner) = coin.get("owner").and_then(|o| o.as_str()) {
-            result["owner"] = Value::String(owner.to_string());
-        }
-    } else if let Some(memo) = output_data.get("Memo") {
-        if let Some(owner) = memo.get("owner").and_then(|o| o.as_str()) {
-            result["owner"] = Value::String(owner.to_string());
-        }
-        if let Some(script_addr) = memo.get("script_address").and_then(|s| s.as_str()) {
-            result["script_address"] = Value::String(script_addr.to_string());
-        }
-        // Extract memo data and interpret order fields
-        if let Some(data) = memo.get("data") {
-            if let Value::Array(data_arr) = data {
-                let mut data_values: Vec<Value> = Vec::new();
-                let mut order_size: Option<u64> = None;
-                let mut order_direction: Option<u64> = None;
-
-                for (idx, item) in data_arr.iter().enumerate() {
-                    if let Some(scalar_obj) = item.get("Scalar") {
-                        if let Some(scalar_inner) = scalar_obj.get("Scalar") {
-                            if let Some(u64_val) = bytes_to_u64_from_value(scalar_inner) {
-                                data_values.push(serde_json::json!({
-                                    "index": idx,
-                                    "value": u64_val
-                                }));
-                                // Capture first two values for order interpretation
-                                if idx == 0 {
-                                    order_size = Some(u64_val);
-                                } else if idx == 1 {
-                                    order_direction = Some(u64_val);
-                                }
-                            }
-                        }
-                    }
-                }
-                if !data_values.is_empty() {
-                    result["data"] = Value::Array(data_values);
-                }
-
-                // Add order interpretation if we have the data
-                if let Some(size) = order_size {
-                    result["order_size"] = Value::Number(size.into());
-                }
-                if let Some(direction) = order_direction {
-                    let position = match direction {
-                        0 => "long",
-                        1 => "short",
-                        _ => "unknown",
-                    };
-                    result["position"] = Value::String(position.to_string());
-                    result["position_raw"] = Value::Number(direction.into());
-                }
-            }
-        }
-    } else if let Some(state) = output_data.get("State") {
-        if let Some(owner) = state.get("owner").and_then(|o| o.as_str()) {
-            result["owner"] = Value::String(owner.to_string());
-        }
-        if let Some(script_addr) = state.get("script_address").and_then(|s| s.as_str()) {
-            result["script_address"] = Value::String(script_addr.to_string());
-        }
-    }
-
-    Some(result)
-}
-
-/// Extract full input info for Memo inputs (for order_close)
-fn extract_full_input_info_with_order(input: &Value, index: usize) -> Option<Value> {
-    let input_data = input.get("input")?;
-    let in_type = input.get("in_type").and_then(|t| t.as_str()).unwrap_or("unknown");
-
-    // Determine which variant and extract data
-    let (utxo, owner, memo_data) = if let Some(coin) = input_data.get("Coin") {
-        let utxo = coin.get("utxo")?;
-        let owner = coin.get("out_coin").and_then(|c| c.get("owner")).and_then(|o| o.as_str());
-        (utxo, owner, None)
-    } else if let Some(memo) = input_data.get("Memo") {
-        let utxo = memo.get("utxo")?;
-        let owner = memo.get("out_memo").and_then(|m| m.get("owner")).and_then(|o| o.as_str());
-        let data = memo.get("out_memo").and_then(|m| m.get("data"));
-        (utxo, owner, data)
-    } else if let Some(state) = input_data.get("State") {
-        let utxo = state.get("utxo")?;
-        let owner = state.get("out_state").and_then(|s| s.get("owner")).and_then(|o| o.as_str());
-        (utxo, owner, None)
-    } else {
-        return None;
-    };
-
-    let txid = utxo.get("txid")?;
-    let output_index = utxo.get("output_index")?;
-
-    // Convert txid bytes to hex
-    let txid_hex = if let Value::Array(bytes) = txid {
-        bytes_to_hex(bytes)
-    } else {
-        return None;
-    };
-
-    let mut result = serde_json::json!({
-        "index": index,
-        "type": in_type,
-        "utxo": {
-            "txid": txid_hex,
-            "output_index": output_index
-        }
-    });
-
-    if let Some(owner_str) = owner {
-        result["owner"] = Value::String(owner_str.to_string());
-    }
-
-    // Extract script_address for Memo inputs
-    if let Some(memo) = input_data.get("Memo") {
-        if let Some(out_memo) = memo.get("out_memo") {
-            if let Some(script_addr) = out_memo.get("script_address").and_then(|s| s.as_str()) {
-                result["script_address"] = Value::String(script_addr.to_string());
-            }
-        }
-    }
-
-    // Extract and interpret memo data for order_close
-    if let Some(data) = memo_data {
-        if let Value::Array(data_arr) = data {
-            let mut data_values: Vec<Value> = Vec::new();
-            let mut order_size: Option<u64> = None;
-            let mut order_direction: Option<u64> = None;
-
-            for (idx, item) in data_arr.iter().enumerate() {
-                if let Some(scalar_obj) = item.get("Scalar") {
-                    if let Some(scalar_inner) = scalar_obj.get("Scalar") {
-                        if let Some(u64_val) = bytes_to_u64_from_value(scalar_inner) {
-                            data_values.push(serde_json::json!({
-                                "index": idx,
-                                "value": u64_val
-                            }));
-                            if idx == 0 {
-                                order_size = Some(u64_val);
-                            } else if idx == 1 {
-                                order_direction = Some(u64_val);
-                            }
-                        }
-                    }
-                }
-            }
-            if !data_values.is_empty() {
-                result["data"] = Value::Array(data_values);
-            }
-
-            // Add order interpretation
-            if let Some(size) = order_size {
-                result["order_size"] = Value::Number(size.into());
-            }
-            if let Some(direction) = order_direction {
-                let position = match direction {
-                    0 => "long",
-                    1 => "short",
-                    _ => "unknown",
-                };
-                result["position"] = Value::String(position.to_string());
-                result["position_raw"] = Value::Number(direction.into());
-            }
-        }
-    }
-
-    Some(result)
-}
-
-/// Extract program instructions from Script transaction
-fn extract_program_instructions(script_tx: &Value) -> Option<Vec<String>> {
-    let program = script_tx.get("program")?;
-    if let Value::Array(bytes) = program {
-        Some(decode_program_bytes(bytes))
-    } else {
-        None
-    }
-}
-
-/// Extract transaction summary from the decoded transaction
-fn extract_tx_summary(data: &Value) -> Value {
-    let mut summary = serde_json::Map::new();
-
-    // Get tx_type from the transaction structure
-    if let Some(tx) = data.get("tx") {
-        if tx.get("TransactionTransfer").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Transfer".to_string()));
-
-            if let Some(transfer_tx) = tx.get("TransactionTransfer") {
-                // Extract all inputs with full info
-                if let Some(Value::Array(inputs)) = transfer_tx.get("inputs") {
-                    summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
-
-                    let input_details: Vec<Value> = inputs.iter()
-                        .enumerate()
-                        .filter_map(|(idx, i)| extract_full_input_info(i, idx))
-                        .collect();
-                    if !input_details.is_empty() {
-                        summary.insert("inputs".to_string(), Value::Array(input_details));
-                    }
-                }
-
-                // Extract all outputs with full info
-                if let Some(Value::Array(outputs)) = transfer_tx.get("outputs") {
-                    summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
-
-                    let output_details: Vec<Value> = outputs.iter()
-                        .enumerate()
-                        .filter_map(|(idx, o)| extract_full_output_info(o, idx))
-                        .collect();
-                    if !output_details.is_empty() {
-                        summary.insert("outputs".to_string(), Value::Array(output_details));
-                    }
-                }
-
-                // Get fee
-                if let Some(fee) = transfer_tx.get("fee") {
-                    summary.insert("fee".to_string(), fee.clone());
-                }
-            }
-        } else if tx.get("TransactionScript").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Script".to_string()));
-
-            // Extract script-specific info
-            if let Some(script_tx) = tx.get("TransactionScript") {
-                // Get input/output types from first input/output
-                let in_type = script_tx.get("inputs")
-                    .and_then(|inputs| inputs.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|input| input.get("in_type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let out_type = script_tx.get("outputs")
-                    .and_then(|outputs| outputs.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|output| output.get("out_type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                summary.insert("input_type".to_string(), Value::String(in_type.to_string()));
-                summary.insert("output_type".to_string(), Value::String(out_type.to_string()));
-
-                // Detect order operation type
-                let order_operation = if in_type == "Coin" && out_type == "Memo" {
-                    "order_open"
-                } else if in_type == "Memo" && out_type == "Coin" {
-                    "order_close"
-                } else if in_type == "State" && out_type == "State" {
-                    "contract_call"
-                } else {
-                    "other"
-                };
-                summary.insert("order_operation".to_string(), Value::String(order_operation.to_string()));
-
-                // Add order operation description
-                let operation_desc = match order_operation {
-                    "order_open" => "Opening a new order: locking coins into a contract memo",
-                    "order_close" => "Closing an order: unlocking coins from a contract memo",
-                    "contract_call" => "Calling a contract: updating contract state",
-                    _ => "Other script operation",
-                };
-                summary.insert("order_operation_description".to_string(), Value::String(operation_desc.to_string()));
-
-                // Extract program instructions
-                if let Some(instructions) = extract_program_instructions(script_tx) {
-                    let instr_values: Vec<Value> = instructions.into_iter()
-                        .map(Value::String)
-                        .collect();
-                    summary.insert("program".to_string(), Value::Array(instr_values));
-                }
-
-                // Extract all inputs with full info
-                // Use extract_full_input_info_with_order for Memo inputs (order_close) to get position data
-                if let Some(Value::Array(inputs)) = script_tx.get("inputs") {
-                    summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
-
-                    let input_details: Vec<Value> = inputs.iter()
-                        .enumerate()
-                        .filter_map(|(idx, i)| {
-                            if in_type == "Memo" {
-                                extract_full_input_info_with_order(i, idx)
-                            } else {
-                                extract_full_input_info(i, idx)
-                            }
-                        })
-                        .collect();
-                    if !input_details.is_empty() {
-                        summary.insert("inputs".to_string(), Value::Array(input_details));
-                    }
-                }
-
-                // Extract all outputs with full info
-                if let Some(Value::Array(outputs)) = script_tx.get("outputs") {
-                    summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
-
-                    let output_details: Vec<Value> = outputs.iter()
-                        .enumerate()
-                        .filter_map(|(idx, o)| extract_full_output_info(o, idx))
-                        .collect();
-                    if !output_details.is_empty() {
-                        summary.insert("outputs".to_string(), Value::Array(output_details));
-                    }
-                }
-
-                // Get fee
-                if let Some(fee) = script_tx.get("fee") {
-                    summary.insert("fee".to_string(), fee.clone());
-                }
-
-                // Check if has proof
-                if let Some(proof) = script_tx.get("proof") {
-                    let has_proof = match proof {
-                        Value::Null => false,
-                        Value::Array(arr) => !arr.is_empty(),
-                        Value::String(s) => !s.is_empty(),
-                        _ => true,
-                    };
-                    summary.insert("has_proof".to_string(), Value::Bool(has_proof));
-                }
-            }
-        } else if tx.get("Message").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Message".to_string()));
-            summary.insert("description".to_string(), Value::String("Burn/Bridge operation".to_string()));
-        }
-    }
-
-    Value::Object(summary)
-}
-
-/// API endpoint: POST /api/decode-transaction
+/// API endpoint: POST /api/decode-zkos-transaction
 ///
-/// Example request:
-/// ```json
-/// {
-///   "tx_byte_code": "0x123abc...",
-///   "block_height": 12345
-/// }
-/// ```
-async fn decode_transaction_endpoint(
-    req: web::Json<DecodeRequest>,
-) -> impl Responder {
-
-    match decode_transaction(&req.tx_byte_code) {
-        Ok(decoded_tx) => {
-            let mut data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
-
-            // Extract summary before transformation (to access original structure)
-            let summary = extract_tx_summary(&data);
-
-            // Determine tx_type from data structure
-            let tx_type = if let Some(tx) = data.get("tx") {
-                if tx.get("TransactionTransfer").is_some() {
-                    "Transfer"
-                } else if tx.get("TransactionScript").is_some() {
-                    "Script"
-                } else if tx.get("Message").is_some() {
-                    "Message"
-                } else {
-                    "Unknown"
-                }
-            } else {
-                "Unknown"
-            };
-
-            // Transform txid to hex, program to instructions, scalars to u64, etc.
-            transform_decoded_tx(&mut data);
-
-            // Add summary to the data object
-            if let Value::Object(ref mut map) = data {
-                map.insert("summary".to_string(), summary);
-            }
-
-            HttpResponse::Ok().json(DecodeResponse {
-                success: true,
-                tx_type: tx_type.to_string(),
-                data,
-            })
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to decode transaction: {:?}", e);
-            HttpResponse::BadRequest().json(ErrorResponse {
-                success: false,
-                error: format!("Failed to decode transaction: {}", e),
-            })
-        }
-    }
-}
-
-/// API endpoint: POST /api/decode-transaction-raw
-///
-/// Returns the raw decoded transaction JSON without any transformations or summary.
+/// Returns the raw decoded transaction JSON without any transformations.
 /// Useful for debugging or when you need the original data structure.
 ///
 /// Example request:
@@ -878,7 +512,7 @@ async fn decode_transaction_raw_endpoint(
 ) -> impl Responder {
     match decode_transaction(&req.tx_byte_code) {
         Ok(decoded_tx) => {
-            let data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
+            let mut data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
 
             // Determine tx_type from data structure
             let tx_type = if let Some(tx) = data.get("tx") {
@@ -895,7 +529,88 @@ async fn decode_transaction_raw_endpoint(
                 "Unknown"
             };
 
-            HttpResponse::Ok().json(DecodeResponse {
+            // Build summary object
+            let mut summary = serde_json::json!({
+                "tx_type": tx_type
+            });
+
+            // For Script transactions, extract program and determine program_type and order_type
+            if let Some(tx) = data.get("tx") {
+                if let Some(script_tx) = tx.get("TransactionScript") {
+                    if let Some(program) = script_tx.get("program") {
+                        if let Some(program_hex) = program_bytes_to_hex(program) {
+                            let program_type = get_program_type(&program_hex);
+                            let order_type = get_order_type(program_type);
+                            summary["program_type"] = serde_json::Value::String(program_type.to_string());
+                            summary["order_type"] = serde_json::Value::String(order_type.to_string());
+
+                            // Decode program opcodes into human-readable list
+                            let opcodes = decode_program_opcodes(program);
+                            summary["program_opcodes"] = serde_json::Value::Array(
+                                opcodes.into_iter().map(serde_json::Value::String).collect()
+                            );
+
+                            // For order_open, extract position_size and order_side from output Memo (COIN -> MEMO)
+                            if order_type == "order_open" {
+                                if let Some(outputs) = script_tx.get("outputs") {
+                                    if let Some(first_output) = outputs.as_array().and_then(|a| a.first()) {
+                                        if let Some(memo) = first_output.get("output").and_then(|o| o.get("Memo")) {
+                                            if let Some(data) = memo.get("data") {
+                                                // data[0] = position_size (divided by 10^8)
+                                                if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                    let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                    if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                        summary["position_size"] = serde_json::Value::Number(num);
+                                                    }
+                                                }
+                                                // data[3] = order_side (1 = short, other = long)
+                                                if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                    let side = if side_val == 1 { "short" } else { "long" };
+                                                    summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // For order_close, extract position_size and order_side from input Memo (MEMO -> COIN)
+                            if order_type == "order_close" {
+                                if let Some(inputs) = script_tx.get("inputs") {
+                                    if let Some(first_input) = inputs.as_array().and_then(|a| a.first()) {
+                                        if let Some(memo) = first_input.get("input").and_then(|i| i.get("Memo")) {
+                                            if let Some(data) = memo.get("data") {
+                                                // data[0] = position_size (divided by 10^8)
+                                                if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                    let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                    if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                        summary["position_size"] = serde_json::Value::Number(num);
+                                                    }
+                                                }
+                                                // data[3] = order_side (1 = short, other = long)
+                                                if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                    let side = if side_val == 1 { "short" } else { "long" };
+                                                    summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Transform byte arrays (proof, sign, value_proof) to hex strings
+            transform_byte_arrays(&mut data);
+
+            // Add summary to data
+            if let serde_json::Value::Object(ref mut map) = data {
+                map.insert("summary".to_string(), summary);
+            }
+
+            HttpResponse::Ok().json(DecodeRawResponse {
                 success: true,
                 tx_type: tx_type.to_string(),
                 data,
@@ -1375,8 +1090,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
             .route("/health", web::get().to(health_check))
-            .route("/decode-transaction", web::post().to(decode_transaction_endpoint))
-            .route("/decode-transaction-raw", web::post().to(decode_transaction_raw_endpoint))
+            .route("/decode-zkos-transaction", web::post().to(decode_transaction_raw_endpoint))
             .route("/transactions/{t_address}", web::get().to(get_transactions))
             .route("/funding/{t_address}", web::get().to(get_funds_moved))
             .route("/exchange-withdrawal/{t_address}", web::get().to(get_dark_burned_sats))
