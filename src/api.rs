@@ -862,6 +862,55 @@ async fn decode_transaction_endpoint(
     }
 }
 
+/// API endpoint: POST /api/decode-transaction-raw
+///
+/// Returns the raw decoded transaction JSON without any transformations or summary.
+/// Useful for debugging or when you need the original data structure.
+///
+/// Example request:
+/// ```json
+/// {
+///   "tx_byte_code": "0x123abc..."
+/// }
+/// ```
+async fn decode_transaction_raw_endpoint(
+    req: web::Json<DecodeRequest>,
+) -> impl Responder {
+    match decode_transaction(&req.tx_byte_code) {
+        Ok(decoded_tx) => {
+            let data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
+
+            // Determine tx_type from data structure
+            let tx_type = if let Some(tx) = data.get("tx") {
+                if tx.get("TransactionTransfer").is_some() {
+                    "Transfer"
+                } else if tx.get("TransactionScript").is_some() {
+                    "Script"
+                } else if tx.get("Message").is_some() {
+                    "Message"
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            };
+
+            HttpResponse::Ok().json(DecodeResponse {
+                success: true,
+                tx_type: tx_type.to_string(),
+                data,
+            })
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to decode transaction: {:?}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                success: false,
+                error: format!("Failed to decode transaction: {}", e),
+            })
+        }
+    }
+}
+
 /// API endpoint: GET /api/transactions/{t_address}
 #[utoipa::path(
     get,
@@ -1327,6 +1376,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             .route("/health", web::get().to(health_check))
             .route("/decode-transaction", web::post().to(decode_transaction_endpoint))
+            .route("/decode-transaction-raw", web::post().to(decode_transaction_raw_endpoint))
             .route("/transactions/{t_address}", web::get().to(get_transactions))
             .route("/funding/{t_address}", web::get().to(get_funds_moved))
             .route("/exchange-withdrawal/{t_address}", web::get().to(get_dark_burned_sats))
