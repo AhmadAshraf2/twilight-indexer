@@ -520,6 +520,27 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
+            // Handle State witness object - convert sign and zero_proof inside
+            if let Some(serde_json::Value::Object(state_witness)) = map.get_mut("State") {
+                // Only process if this looks like a witness (has sign/zero_proof, not out_state)
+                if state_witness.contains_key("sign") && !state_witness.contains_key("out_state") {
+                    // Convert sign to hex
+                    if let Some(sign) = state_witness.get("sign") {
+                        if let Some(hex) = bytes_array_to_hex(sign) {
+                            state_witness.insert("sign".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    // Convert zero_proof arrays to hex
+                    if let Some(serde_json::Value::Array(zero_proof)) = state_witness.get_mut("zero_proof") {
+                        for item in zero_proof.iter_mut() {
+                            if let Some(hex) = bytes_array_to_hex(item) {
+                                *item = serde_json::Value::String(hex);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Convert Dleq value_proof arrays to hex strings (handles nested arrays)
             if let Some(serde_json::Value::Array(dleq)) = map.get_mut("Dleq") {
                 for item in dleq.iter_mut() {
