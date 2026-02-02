@@ -468,6 +468,47 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
+            // Convert encrypt.c and encrypt.d byte arrays to hex strings
+            if let Some(serde_json::Value::Object(encrypt_map)) = map.get_mut("encrypt") {
+                if let Some(c) = encrypt_map.get("c") {
+                    if let Some(hex) = bytes_array_to_hex(c) {
+                        encrypt_map.insert("c".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(d) = encrypt_map.get("d") {
+                    if let Some(hex) = bytes_array_to_hex(d) {
+                        encrypt_map.insert("d".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert neighbors byte arrays to hex strings (in call_proof.path.neighbors)
+            if let Some(serde_json::Value::Array(neighbors)) = map.get_mut("neighbors") {
+                for item in neighbors.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
+                    }
+                }
+            }
+
+            // Convert commitment.Closed byte array to hex string
+            if let Some(serde_json::Value::Object(commitment_map)) = map.get_mut("commitment") {
+                if let Some(closed) = commitment_map.get("Closed") {
+                    if let Some(hex) = bytes_array_to_hex(closed) {
+                        commitment_map.insert("Closed".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert Commitment.Closed byte array to hex string (capital C variant)
+            if let Some(serde_json::Value::Object(commitment_map)) = map.get_mut("Commitment") {
+                if let Some(closed) = commitment_map.get("Closed") {
+                    if let Some(hex) = bytes_array_to_hex(closed) {
+                        commitment_map.insert("Closed".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
             // Transform State input/output data with meaningful labels
             if let Some(serde_json::Value::Object(state_map)) = map.get_mut("State") {
                 if let Some(data) = state_map.get_mut("data") {
@@ -609,6 +650,55 @@ async fn decode_transaction_raw_endpoint(
             if let serde_json::Value::Object(ref mut map) = data {
                 map.insert("summary".to_string(), summary);
             }
+
+            HttpResponse::Ok().json(DecodeRawResponse {
+                success: true,
+                tx_type: tx_type.to_string(),
+                data,
+            })
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to decode transaction: {:?}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                success: false,
+                error: format!("Failed to decode transaction: {}", e),
+            })
+        }
+    }
+}
+
+/// API endpoint: POST /api/decode-zkos-transaction-raw
+///
+/// Returns the raw decoded transaction JSON without any transformations.
+/// No hex conversions, no field renaming, just the pure deserialized output.
+///
+/// Example request:
+/// ```json
+/// {
+///   "tx_byte_code": "0x123abc..."
+/// }
+/// ```
+async fn decode_zkos_transaction_raw_endpoint(
+    req: web::Json<DecodeRequest>,
+) -> impl Responder {
+    match decode_transaction(&req.tx_byte_code) {
+        Ok(decoded_tx) => {
+            let data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
+
+            // Determine tx_type from data structure
+            let tx_type = if let Some(tx) = data.get("tx") {
+                if tx.get("TransactionTransfer").is_some() {
+                    "Transfer"
+                } else if tx.get("TransactionScript").is_some() {
+                    "Script"
+                } else if tx.get("Message").is_some() {
+                    "Message"
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            };
 
             HttpResponse::Ok().json(DecodeRawResponse {
                 success: true,
@@ -1091,6 +1181,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             .route("/health", web::get().to(health_check))
             .route("/decode-zkos-transaction", web::post().to(decode_transaction_raw_endpoint))
+            .route("/decode-zkos-transaction-raw", web::post().to(decode_zkos_transaction_raw_endpoint))
             .route("/transactions/{t_address}", web::get().to(get_transactions))
             .route("/funding/{t_address}", web::get().to(get_funds_moved))
             .route("/exchange-withdrawal/{t_address}", web::get().to(get_dark_burned_sats))
