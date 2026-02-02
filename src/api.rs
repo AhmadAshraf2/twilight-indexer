@@ -335,15 +335,21 @@ fn transform_state_data(data: &mut serde_json::Value) {
     if let serde_json::Value::Array(arr) = data {
         for (idx, item) in arr.iter_mut().enumerate() {
             if let serde_json::Value::Object(obj) = item {
-                // Check if this is a Commitment
-                if obj.contains_key("Commitment") {
+                // Check if this is a Commitment and extract the hex value
+                if let Some(commitment) = obj.get("Commitment") {
+                    let hex_value = if let Some(closed) = commitment.get("Closed") {
+                        closed.as_str().unwrap_or("").to_string()
+                    } else {
+                        "".to_string()
+                    };
+
                     let label = match idx {
                         0 => "total_locked_value",
                         1 => "total_pool_share",
                         _ => "commitment",
                     };
                     *item = serde_json::json!({
-                        label: "(encrypted)"
+                        label: hex_value
                     });
                 }
             }
@@ -401,17 +407,23 @@ fn transform_memo_data(data: &mut serde_json::Value) {
                         }
                     }
                 }
-                // Handle Commitment values
-                else if obj.contains_key("Commitment") {
+                // Handle Commitment values - extract the hex value
+                else if let Some(commitment) = obj.get("Commitment") {
+                    let hex_value = if let Some(closed) = commitment.get("Closed") {
+                        closed.as_str().unwrap_or("").to_string()
+                    } else {
+                        "".to_string()
+                    };
+
                     match idx {
                         1 => {
                             new_data.push(serde_json::json!({
-                                "leverage": "(encrypted)"
+                                "leverage": hex_value
                             }));
                         }
                         _ => {
                             new_data.push(serde_json::json!({
-                                "commitment": "(encrypted)"
+                                "commitment": hex_value
                             }));
                         }
                     }
