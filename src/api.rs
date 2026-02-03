@@ -682,6 +682,38 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                 }
             }
 
+            // Convert encrypt_scalar (Scalar type) to hex string - used in Message/RevealProof
+            if let Some(encrypt_scalar) = map.get("encrypt_scalar") {
+                // Scalar can be serialized as {"Scalar": [bytes...]} or directly as [bytes...]
+                if let Some(scalar_obj) = encrypt_scalar.as_object() {
+                    if let Some(scalar_bytes) = scalar_obj.get("Scalar") {
+                        if let Some(hex) = bytes_array_to_hex(scalar_bytes) {
+                            map.insert("encrypt_scalar".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                } else if let Some(hex) = bytes_array_to_hex(encrypt_scalar) {
+                    map.insert("encrypt_scalar".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert signature witness in Message transactions
+            if let Some(serde_json::Value::Object(sig_map)) = map.get_mut("signature") {
+                // Convert sign to hex
+                if let Some(sign) = sig_map.get("sign") {
+                    if let Some(hex) = bytes_array_to_hex(sign) {
+                        sig_map.insert("sign".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                // Convert zero_proof arrays to hex
+                if let Some(serde_json::Value::Array(zero_proof)) = sig_map.get_mut("zero_proof") {
+                    for item in zero_proof.iter_mut() {
+                        if let Some(hex) = bytes_array_to_hex(item) {
+                            *item = serde_json::Value::String(hex);
+                        }
+                    }
+                }
+            }
+
             // Transform State input/output data with meaningful labels
             if let Some(serde_json::Value::Object(state_map)) = map.get_mut("State") {
                 if let Some(data) = state_map.get_mut("data") {
@@ -747,6 +779,34 @@ async fn decode_transaction_raw_endpoint(
             let mut summary = serde_json::json!({
                 "tx_type": tx_type
             });
+
+            // For Message transactions, extract msg_type, fee, amount, etc.
+            if let Some(tx) = data.get("tx") {
+                if let Some(message_tx) = tx.get("Message") {
+                    // Extract msg_type
+                    if let Some(msg_type) = message_tx.get("msg_type") {
+                        summary["msg_type"] = msg_type.clone();
+                    }
+                    // Extract fee
+                    if let Some(fee) = message_tx.get("fee") {
+                        summary["fee"] = fee.clone();
+                    }
+                    // Extract version
+                    if let Some(version) = message_tx.get("version") {
+                        summary["version"] = version.clone();
+                    }
+                    // Extract msg_data (initial address for burn)
+                    if let Some(msg_data) = message_tx.get("msg_data") {
+                        summary["msg_data"] = msg_data.clone();
+                    }
+                    // Extract amount from proof
+                    if let Some(proof) = message_tx.get("proof") {
+                        if let Some(amount) = proof.get("amount") {
+                            summary["amount"] = amount.clone();
+                        }
+                    }
+                }
+            }
 
             // For Script transactions, extract program and determine program_type and order_type
             if let Some(tx) = data.get("tx") {
