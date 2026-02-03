@@ -697,20 +697,68 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
             }
 
             // Convert signature witness in Message transactions
+            // Witness::Signature can be: { "Signature": [bytes] } (direct byte array)
+            // or { "Signature": { "s": [bytes], "R": [bytes] } } (object with fields)
             if let Some(serde_json::Value::Object(sig_map)) = map.get_mut("signature") {
-                // Convert sign to hex
+                // Handle Witness::Signature variant - check if it's a direct byte array
+                if let Some(sig_val) = sig_map.get("Signature") {
+                    if sig_val.is_array() {
+                        // Direct byte array: {"Signature": [bytes]}
+                        if let Some(hex) = bytes_array_to_hex(sig_val) {
+                            sig_map.insert("Signature".to_string(), serde_json::Value::String(hex));
+                        }
+                    } else if let Some(inner_sig) = sig_val.as_object() {
+                        // Object with s and R: {"Signature": {"s": [...], "R": [...]}}
+                        let mut new_inner = inner_sig.clone();
+                        if let Some(s_val) = inner_sig.get("s") {
+                            if let Some(hex) = bytes_array_to_hex(s_val) {
+                                new_inner.insert("s".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                        if let Some(r_val) = inner_sig.get("R") {
+                            if let Some(hex) = bytes_array_to_hex(r_val) {
+                                new_inner.insert("R".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                        sig_map.insert("Signature".to_string(), serde_json::Value::Object(new_inner));
+                    }
+                }
+                // Also handle direct sign/zero_proof structure (other witness types)
                 if let Some(sign) = sig_map.get("sign") {
                     if let Some(hex) = bytes_array_to_hex(sign) {
                         sig_map.insert("sign".to_string(), serde_json::Value::String(hex));
                     }
                 }
-                // Convert zero_proof arrays to hex
                 if let Some(serde_json::Value::Array(zero_proof)) = sig_map.get_mut("zero_proof") {
                     for item in zero_proof.iter_mut() {
                         if let Some(hex) = bytes_array_to_hex(item) {
                             *item = serde_json::Value::String(hex);
                         }
                     }
+                }
+            }
+
+            // Handle Signature at top level - can be direct byte array or object
+            if let Some(sig_val) = map.get("Signature") {
+                if sig_val.is_array() {
+                    // Direct byte array
+                    if let Some(hex) = bytes_array_to_hex(sig_val) {
+                        map.insert("Signature".to_string(), serde_json::Value::String(hex));
+                    }
+                } else if let Some(sig_inner) = sig_val.as_object() {
+                    // Object with s and R
+                    let mut new_inner = sig_inner.clone();
+                    if let Some(s_val) = sig_inner.get("s") {
+                        if let Some(hex) = bytes_array_to_hex(s_val) {
+                            new_inner.insert("s".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    if let Some(r_val) = sig_inner.get("R") {
+                        if let Some(hex) = bytes_array_to_hex(r_val) {
+                            new_inner.insert("R".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    map.insert("Signature".to_string(), serde_json::Value::Object(new_inner));
                 }
             }
 
