@@ -765,22 +765,26 @@ async fn decode_transaction_raw_endpoint(
                             );
 
                             // For order_open, extract position_size and order_side from output Memo (COIN -> MEMO)
+                            // Search through ALL outputs to find the Memo
                             if order_type == "order_open" {
                                 if let Some(outputs) = script_tx.get("outputs") {
-                                    if let Some(first_output) = outputs.as_array().and_then(|a| a.first()) {
-                                        if let Some(memo) = first_output.get("output").and_then(|o| o.get("Memo")) {
-                                            if let Some(data) = memo.get("data") {
-                                                // data[0] = position_size (divided by 10^8)
-                                                if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
-                                                    let pos_size_converted = pos_size as f64 / 100_000_000.0;
-                                                    if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
-                                                        summary["position_size"] = serde_json::Value::Number(num);
+                                    if let Some(outputs_arr) = outputs.as_array() {
+                                        for output in outputs_arr {
+                                            if let Some(memo) = output.get("output").and_then(|o| o.get("Memo")) {
+                                                if let Some(data) = memo.get("data") {
+                                                    // data[0] = position_size (divided by 10^8)
+                                                    if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                        let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                        if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                            summary["position_size"] = serde_json::Value::Number(num);
+                                                        }
                                                     }
-                                                }
-                                                // data[3] = order_side (1 = short, other = long)
-                                                if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
-                                                    let side = if side_val == 1 { "short" } else { "long" };
-                                                    summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                    // data[3] = order_side (1 = short, other = long)
+                                                    if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                        let side = if side_val == 1 { "short" } else { "long" };
+                                                        summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                    }
+                                                    break; // Found the Memo, stop searching
                                                 }
                                             }
                                         }
@@ -789,22 +793,26 @@ async fn decode_transaction_raw_endpoint(
                             }
 
                             // For order_close, extract position_size and order_side from input Memo (MEMO -> COIN)
+                            // Search through ALL inputs to find the Memo
                             if order_type == "order_close" {
                                 if let Some(inputs) = script_tx.get("inputs") {
-                                    if let Some(first_input) = inputs.as_array().and_then(|a| a.first()) {
-                                        if let Some(memo) = first_input.get("input").and_then(|i| i.get("Memo")) {
-                                            if let Some(data) = memo.get("data") {
-                                                // data[0] = position_size (divided by 10^8)
-                                                if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
-                                                    let pos_size_converted = pos_size as f64 / 100_000_000.0;
-                                                    if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
-                                                        summary["position_size"] = serde_json::Value::Number(num);
+                                    if let Some(inputs_arr) = inputs.as_array() {
+                                        for input in inputs_arr {
+                                            if let Some(memo) = input.get("input").and_then(|i| i.get("Memo")) {
+                                                if let Some(data) = memo.get("data") {
+                                                    // data[0] = position_size (divided by 10^8)
+                                                    if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                        let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                        if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                            summary["position_size"] = serde_json::Value::Number(num);
+                                                        }
                                                     }
-                                                }
-                                                // data[3] = order_side (1 = short, other = long)
-                                                if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
-                                                    let side = if side_val == 1 { "short" } else { "long" };
-                                                    summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                    // data[3] = order_side (1 = short, other = long)
+                                                    if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                        let side = if side_val == 1 { "short" } else { "long" };
+                                                        summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                    }
+                                                    break; // Found the Memo, stop searching
                                                 }
                                             }
                                         }
