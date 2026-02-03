@@ -771,8 +771,15 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
 
             // Transform Memo input/output data with meaningful labels
             if let Some(serde_json::Value::Object(memo_map)) = map.get_mut("Memo") {
+                // Output Memo: data is directly in Memo
                 if let Some(data) = memo_map.get_mut("data") {
                     transform_memo_data(data);
+                }
+                // Input Memo: data is inside out_memo (nested OutputMemo)
+                if let Some(serde_json::Value::Object(out_memo)) = memo_map.get_mut("out_memo") {
+                    if let Some(data) = out_memo.get_mut("data") {
+                        transform_memo_data(data);
+                    }
                 }
             }
 
@@ -902,25 +909,29 @@ async fn decode_transaction_raw_endpoint(
 
                             // For order_close, extract position_size and order_side from input Memo (MEMO -> COIN)
                             // Search through ALL inputs to find the Memo
+                            // Note: Input Memo has data nested inside out_memo (embedded OutputMemo)
                             if order_type == "order_close" {
                                 if let Some(inputs) = script_tx.get("inputs") {
                                     if let Some(inputs_arr) = inputs.as_array() {
                                         for input in inputs_arr {
                                             if let Some(memo) = input.get("input").and_then(|i| i.get("Memo")) {
-                                                if let Some(data) = memo.get("data") {
-                                                    // data[0] = position_size (divided by 10^8)
-                                                    if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
-                                                        let pos_size_converted = pos_size as f64 / 100_000_000.0;
-                                                        if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
-                                                            summary["position_size"] = serde_json::Value::Number(num);
+                                                // Input Memo: data is inside out_memo (nested OutputMemo)
+                                                if let Some(out_memo) = memo.get("out_memo") {
+                                                    if let Some(data) = out_memo.get("data") {
+                                                        // data[0] = position_size (divided by 10^8)
+                                                        if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                            let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                            if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                                summary["position_size"] = serde_json::Value::Number(num);
+                                                            }
                                                         }
+                                                        // data[3] = order_side (1 = short, other = long)
+                                                        if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                            let side = if side_val == 1 { "short" } else { "long" };
+                                                            summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                        }
+                                                        break; // Found the Memo, stop searching
                                                     }
-                                                    // data[3] = order_side (1 = short, other = long)
-                                                    if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
-                                                        let side = if side_val == 1 { "short" } else { "long" };
-                                                        summary["order_side"] = serde_json::Value::String(side.to_string());
-                                                    }
-                                                    break; // Found the Memo, stop searching
                                                 }
                                             }
                                         }
