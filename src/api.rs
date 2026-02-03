@@ -781,6 +781,53 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                         transform_memo_data(data);
                     }
                 }
+                // Convert coin_value Commitment to hex (in Input Memo)
+                if let Some(serde_json::Value::Object(coin_value)) = memo_map.get_mut("coin_value") {
+                    if let Some(closed) = coin_value.get("Closed") {
+                        if let Some(hex) = bytes_array_to_hex(closed) {
+                            coin_value.insert("Closed".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                }
+            }
+
+            // Convert tx_data (zkvm::String) - can be Scalar, Commitment, or Opaque
+            if let Some(tx_data) = map.get_mut("tx_data") {
+                if let Some(tx_data_obj) = tx_data.as_object_mut() {
+                    // Handle Scalar variant: {"Scalar": {"Scalar": [bytes...]}}
+                    if let Some(scalar_obj) = tx_data_obj.get("Scalar") {
+                        if let Some(scalar_inner) = scalar_obj.as_object() {
+                            if let Some(scalar_bytes) = scalar_inner.get("Scalar") {
+                                if let Some(bytes) = scalar_bytes.as_array() {
+                                    // Convert first 8 bytes to u64 little-endian
+                                    let mut arr_8 = [0u8; 8];
+                                    for (i, byte_val) in bytes.iter().take(8).enumerate() {
+                                        if let Some(b) = byte_val.as_u64() {
+                                            arr_8[i] = b as u8;
+                                        }
+                                    }
+                                    let u64_val = u64::from_le_bytes(arr_8);
+                                    // Replace with u64 value
+                                    tx_data_obj.insert("Scalar".to_string(), serde_json::json!(u64_val));
+                                }
+                            }
+                        }
+                    }
+                    // Handle Commitment variant: {"Commitment": {"Closed": [bytes...]}}
+                    if let Some(serde_json::Value::Object(commitment)) = tx_data_obj.get_mut("Commitment") {
+                        if let Some(closed) = commitment.get("Closed") {
+                            if let Some(hex) = bytes_array_to_hex(closed) {
+                                commitment.insert("Closed".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                    }
+                    // Handle Opaque variant: {"Opaque": [bytes...]}
+                    if let Some(opaque) = tx_data_obj.get("Opaque") {
+                        if let Some(hex) = bytes_array_to_hex(opaque) {
+                            tx_data_obj.insert("Opaque".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                }
             }
 
             // Recursively transform nested objects
