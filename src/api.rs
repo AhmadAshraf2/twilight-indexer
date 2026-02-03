@@ -798,17 +798,9 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                     if let Some(scalar_obj) = tx_data_obj.get("Scalar") {
                         if let Some(scalar_inner) = scalar_obj.as_object() {
                             if let Some(scalar_bytes) = scalar_inner.get("Scalar") {
-                                if let Some(bytes) = scalar_bytes.as_array() {
-                                    // Convert first 8 bytes to u64 little-endian
-                                    let mut arr_8 = [0u8; 8];
-                                    for (i, byte_val) in bytes.iter().take(8).enumerate() {
-                                        if let Some(b) = byte_val.as_u64() {
-                                            arr_8[i] = b as u8;
-                                        }
-                                    }
-                                    let u64_val = u64::from_le_bytes(arr_8);
-                                    // Replace with u64 value
-                                    tx_data_obj.insert("Scalar".to_string(), serde_json::json!(u64_val));
+                                if let Some(hex) = bytes_array_to_hex(scalar_bytes) {
+                                    // Replace with hex string
+                                    tx_data_obj.insert("Scalar".to_string(), serde_json::Value::String(hex));
                                 }
                             }
                         }
@@ -826,6 +818,15 @@ fn transform_byte_arrays(value: &mut serde_json::Value) {
                         if let Some(hex) = bytes_array_to_hex(opaque) {
                             tx_data_obj.insert("Opaque".to_string(), serde_json::Value::String(hex));
                         }
+                    }
+                }
+            }
+
+            // Convert general Scalar objects: {"Scalar": {"Scalar": [bytes...]}} -> {"Scalar": "hex"}
+            if let Some(serde_json::Value::Object(scalar_outer)) = map.get_mut("Scalar") {
+                if let Some(scalar_inner) = scalar_outer.get("Scalar") {
+                    if let Some(hex) = bytes_array_to_hex(scalar_inner) {
+                        scalar_outer.insert("Scalar".to_string(), serde_json::Value::String(hex));
                     }
                 }
             }
