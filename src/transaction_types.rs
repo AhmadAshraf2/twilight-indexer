@@ -354,38 +354,48 @@ pub fn decode_standard_any(any: &Any, block_height: u64) -> Result<StandardCosmo
                         eprintln!("⚠️ TransferTransaction has no inputs or outputs");
                         return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx));
                     }
-                    let owner = match inputs[0].as_owner_address() {
-                        Some(o) => o.clone(),
-                        None => {
-                            eprintln!("⚠️ Failed to get owner address from input");
-                            return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx))
-                        },
-                    };
-                    let new_qq_account = outputs[0]
-                        .to_quisquis_account()
-                        .expect("Failed to convert to quisquis account"
-                    );
-                    let new_qq_account = hex::encode(
-                    bincode::serialize(&new_qq_account)
-                        .expect("Failed to serialize account to bytes")
-                    );
+                    // Link each output to its corresponding input's twilight address
+                    let max_len = std::cmp::min(inputs.len(), outputs.len());
+                    for i in 0..max_len {
+                        // Get owner from input[i]
+                        let owner = match inputs[i].as_owner_address() {
+                            Some(o) => o.clone(),
+                            None => {
+                                eprintln!("⚠️ Failed to get owner address from input[{}]", i);
+                                continue;
+                            }
+                        };
 
-                    let t_address = match get_taddress_for_qaddress(&owner)?{
-                        Some(o) => o.clone(),
-                        None => return Ok(StandardCosmosMsg::NyksZkosMsgTransferTx(cosmos_tx)),
-                    };
+                        // Get new qq account from output[i] - works for ALL types (Coin, Memo, State)
+                        let new_qq_account = match outputs[i].as_output_data().get_owner_address() {
+                            Some(owner) => owner.clone(),
+                            None => {
+                                eprintln!("⚠️ Failed to get owner address from output[{}]", i);
+                                continue;
+                            }
+                        };
 
-                    if let Err(e) = insert_addr_mappings(&t_address, &new_qq_account, block_height) {
-                        eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", t_address, new_qq_account, e);
-                    }
+                        // Lookup twilight address for this input's qq account
+                        let t_address = match get_taddress_for_qaddress(&owner)? {
+                            Some(o) => o.clone(),
+                            None => continue, // Skip if no twilight address found
+                        };
 
-                    if let Err(e) = insert_transaction_count(&t_address, block_height) {
-                        eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", t_address, e);
-                    }
+                        // Link the new qq account to the twilight address
+                        if let Err(e) = insert_addr_mappings(&t_address, &new_qq_account, block_height) {
+                            eprintln!("⚠️ Failed to update addr_mappings for {} <-> {}: {:?}", t_address, new_qq_account, e);
+                        }
 
-                    if inputs[0].in_type == zkvm::IOType::Coin && outputs[0].out_type == zkvm::IOType::Memo {
-                        if let Err(e) = insert_trading_tx(&new_qq_account, &owner, block_height){
-                            eprintln!("⚠️ Failed to update trading tx for {}: {:?}", new_qq_account, e);
+                        // Update transaction count
+                        if let Err(e) = insert_transaction_count(&t_address, block_height) {
+                            eprintln!("⚠️ Failed to update transaction_count for {}: {:?}", t_address, e);
+                        }
+
+                        // For Coin → Memo, also insert trading_tx
+                        if inputs[i].in_type == zkvm::IOType::Coin && outputs[i].out_type == zkvm::IOType::Memo {
+                            if let Err(e) = insert_trading_tx(&new_qq_account, &owner, block_height) {
+                                eprintln!("⚠️ Failed to update trading tx for {}: {:?}", new_qq_account, e);
+                            }
                         }
                     }
                 }
