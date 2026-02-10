@@ -88,3 +88,4 @@ perf.data.old
 
 # Flamegraph output
 flamegraph.svg
+Cargo.lock

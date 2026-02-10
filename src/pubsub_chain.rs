@@ -23,7 +23,7 @@ lazy_static! {
     pub static ref NYKS_BLOCK_SUBSCRIBER_URL: String =
         std::env::var("NYKS_BLOCK_SUBSCRIBER_URL").unwrap_or("http://localhost:1317/".to_string());
 }
- //BlockRaw, ThreadPool};
+//BlockRaw, ThreadPool};
 
 /// Subscribes to new blocks from the Cosmos chain.
 ///
@@ -36,11 +36,14 @@ lazy_static! {
 /// A tuple containing:
 /// - An `Arc<Mutex<mpsc::Receiver<Block>>>` for receiving new blocks.
 /// - A `JoinHandle` for the background thread.
-pub fn subscribe_block(){
+pub fn subscribe_block() {
     let mut latest_height = match BlockRaw::get_latest_block_height() {
         Ok(height) => height,
         Err(arg) => {
-            println!("Can not get latest height \nError: {:?}\nSetting height to 0", arg);
+            println!(
+                "Can not get latest height \nError: {:?}\nSetting height to 0",
+                arg
+            );
             panic!("Cannot get latest height from chain, check connection settings");
         }
     };
@@ -54,20 +57,20 @@ pub fn subscribe_block(){
                 Ok(block_raw) => {
                     println!("Fetched Block at height: {}", block_height);
                     for tx in &block_raw.block.data.txs {
-                        let _decoded_tx = crate::transaction_types::decode_tx_base64_standard(tx, block_height);
+                        let _decoded_tx =
+                            crate::transaction_types::decode_tx_base64_standard(tx, block_height);
                     }
                     block_height += 1;
                 }
                 Err(arg) => {
-                    if arg.as_str() == "3"{
+                    if arg.as_str() == "3" {
                         println!("block fetching at block height :{}, return code=3, fetching next block", block_height);
                         block_height += 1;
                     } else {
                         attempt += 1;
                         println!(
                             "block fetching error at block height : {:?} \nError:{:?}",
-                            block_height,
-                            arg
+                            block_height, arg
                         );
                         if attempt == 3 {
                             println!("block fetching at block height :{} failed after 3 attempts, fethcing next block", block_height);
@@ -82,15 +85,18 @@ pub fn subscribe_block(){
 
         latest_height = match BlockRaw::get_latest_block_height() {
             Ok(height) => height,
-            Err(arg ) => {
-                println!("Can not get latest height \nError: {:?}\nSetting height to 0", arg);
+            Err(arg) => {
+                println!(
+                    "Can not get latest height \nError: {:?}\nSetting height to 0",
+                    arg
+                );
                 panic!("Cannot get latest height from chain, check connection settings");
             }
         };
 
         BlockRaw::write_local_block_height(block_height);
         println!("Sleeping for 30 seconds before checking for new blocks...");
-        std::thread::sleep(time::Duration::from_secs(30));
+        std::thread::sleep(time::Duration::from_secs(5));
     }
 }
 
