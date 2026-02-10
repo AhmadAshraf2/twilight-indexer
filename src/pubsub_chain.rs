@@ -95,7 +95,7 @@ pub fn subscribe_block() {
         };
 
         BlockRaw::write_local_block_height(block_height);
-        println!("Sleeping for 30 seconds before checking for new blocks...");
+        println!("Sleeping for 5 seconds before checking for new blocks...");
         std::thread::sleep(time::Duration::from_secs(5));
     }
 }
