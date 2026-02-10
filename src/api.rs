@@ -1,7 +1,6 @@
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use crate::quis_quis_tx::decode_transaction;
 use crate::db;
 use utoipa::{OpenApi, ToSchema};
@@ -13,11 +12,13 @@ pub struct DecodeRequest {
     pub tx_byte_code: String,
 }
 
-/// Response for successful transaction decode
+/// Response for successful transaction decode (raw)
 #[derive(Debug, Serialize, ToSchema)]
-pub struct DecodeResponse {
+pub struct DecodeRawResponse {
     pub success: bool,
     pub tx_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<serde_json::Value>,
     pub data: serde_json::Value,
 }
 
@@ -130,372 +131,737 @@ pub struct AddressAllDataResponse {
     pub lit_burned_sats: Vec<LitBurnedSatsData>,
 }
 
-/// Convert opcode byte to instruction name
-fn opcode_to_name(opcode: u8) -> &'static str {
-    match opcode {
-        0x00 => "push",
-        0x01 => "program",
-        0x02 => "drop",
-        0x03 => "dup",
-        0x04 => "roll",
-        0x05 => "scalar",
-        0x06 => "commit",
-        0x07 => "alloc",
-        0x0a => "expr",
-        0x0b => "neg",
-        0x0c => "add",
-        0x0d => "mul",
-        0x0e => "eq",
-        0x0f => "range",
-        0x10 => "and",
-        0x11 => "or",
-        0x12 => "not",
-        0x13 => "verify",
-        0x14 => "unblind",
-        0x15 => "issue",
-        0x16 => "borrow",
-        0x17 => "retire",
-        0x19 => "fee",
-        0x1a => "input",
-        0x1b => "output",
-        0x1c => "contract",
-        0x1d => "log",
-        0x1e => "call",
-        0x1f => "signtx",
-        0x20 => "signid",
-        0x21 => "signtag",
-        0x22 => "inputcoin",
-        0x23 => "outputcoin",
-        _ => "ext",
+/// Known program types from twilight-client-sdk/relayerprogram.json
+const PROGRAM_TYPES: &[(&str, &str)] = &[
+    ("060a0402000000060a0e0401000000060a0402000000060a0e1013", "RelayerInitializer"),
+    ("060a0403000000060a0405000000060a0d0e13020202", "CreateTraderOrder"),
+    ("040300000002040300000002040a0000000603000000000a0b04070000000603000000000a04020000000c04020000000a0b04020000000a0c0404000000060a0b0c0302000000050d0307000000050d0407000000050403000000050b0c0406000000050d0407000000050d0403000000050c0e04010000000b0403000000060a0c0402000000060a0e101302", "SettleTraderOrder"),
+    ("0401000000060a0302000000060a0306000000060a0c0e0403000000060a0304000000060a0307000000060a0c0e100401000000050402000000060a0405000000060a0d0c0402000000060a0403000000060a0d0e1013", "CreateLendOrder"),
+    ("050304000000060a0307000000060a0d0c0302000000060a0306000000060a0d0e0406000000060a0b0403000000060a0c0402000000060a0e100401000000060a0402000000060a0403000000060a0b0c0e101302", "SettleLendOrder"),
+    ("0202020202060a0401000000060a0407000000060a0c0e130202020202", "LiquidateOrder"),
+    ("040300000002040300000002040a0000000603000000000a0b04070000000603000000000a04020000000c04020000000a0b04020000000a0c0404000000060a0c0302000000050d0307000000050d0407000000050403000000050b0c0406000000050d0407000000050d0403000000050c0e04010000000b0403000000060a0c0402000000060a0e101302", "SettleTraderOrderNegativeMarginDifference"),
+];
+
+/// Convert program bytes array to hex string
+fn program_bytes_to_hex(program: &serde_json::Value) -> Option<String> {
+    if let serde_json::Value::Array(bytes) = program {
+        let hex: String = bytes.iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+            .collect();
+        Some(hex)
+    } else {
+        None
     }
 }
 
-/// Check if opcode has a u32 argument
-fn opcode_has_arg(opcode: u8) -> bool {
-    matches!(opcode, 0x03 | 0x04 | 0x1b | 0x1c | 0x22 | 0x23) // dup, roll, output, contract, inputcoin, outputcoin
+/// Match program hex to known program type
+fn get_program_type(program_hex: &str) -> &'static str {
+    for (hex, name) in PROGRAM_TYPES {
+        if *hex == program_hex {
+            return name;
+        }
+    }
+    "Unknown"
 }
 
-/// Check if opcode has variable-length data (push, program)
-fn opcode_has_data(opcode: u8) -> bool {
-    matches!(opcode, 0x00 | 0x01) // push, program
+/// Get order type based on program type
+fn get_order_type(program_type: &str) -> &'static str {
+    match program_type {
+        "RelayerInitializer" => "initialize_contract",
+        "CreateTraderOrder" | "CreateLendOrder" => "order_open",
+        "SettleTraderOrder" | "SettleLendOrder" | "LiquidateOrder" | "SettleTraderOrderNegativeMarginDifference" => "order_close",
+        _ => "unknown"
+    }
 }
 
-/// Convert program bytes to human-readable instructions
-fn decode_program_bytes(bytes: &[Value]) -> Vec<String> {
-    let mut instructions = Vec::new();
+/// Extract scalar u64 value from Memo data array at a given index
+fn extract_scalar_u64_from_data(data: &serde_json::Value, index: usize) -> Option<u64> {
+    let arr = data.as_array()?;
+    let item = arr.get(index)?;
+    let scalar_obj = item.get("Scalar")?;
+    let scalar_inner = scalar_obj.get("Scalar")?;
+    let bytes = scalar_inner.as_array()?;
+    // Convert first 8 bytes to u64 little-endian
+    let mut arr_8 = [0u8; 8];
+    for (i, byte_val) in bytes.iter().take(8).enumerate() {
+        arr_8[i] = byte_val.as_u64()? as u8;
+    }
+    Some(u64::from_le_bytes(arr_8))
+}
+
+/// Decode program bytes into human-readable opcode list
+fn decode_program_opcodes(program: &serde_json::Value) -> Vec<String> {
+    let bytes: Vec<u8> = match program.as_array() {
+        Some(arr) => arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect(),
+        None => return vec![],
+    };
+
+    let mut opcodes = Vec::new();
     let mut i = 0;
 
-    // Convert Value array to u8 array
-    let byte_vec: Vec<u8> = bytes.iter()
-        .filter_map(|v| v.as_u64().map(|n| n as u8))
-        .collect();
+    while i < bytes.len() {
+        let opcode = bytes[i];
+        i += 1;
 
-    while i < byte_vec.len() {
-        let opcode = byte_vec[i];
-        let name = opcode_to_name(opcode);
+        let name = match opcode {
+            0x00 => {
+                // Push: read LE32 length, then skip data
+                if i + 4 <= bytes.len() {
+                    let len = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+                    i += 4 + len;
+                    format!("push:{}", len)
+                } else {
+                    "push".to_string()
+                }
+            }
+            0x01 => {
+                // Program: read LE32 length, then skip data
+                if i + 4 <= bytes.len() {
+                    let len = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+                    i += 4 + len;
+                    format!("program:{}", len)
+                } else {
+                    "program".to_string()
+                }
+            }
+            0x02 => "drop".to_string(),
+            0x03 => {
+                // Dup: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("dup:{}", idx)
+                } else {
+                    "dup".to_string()
+                }
+            }
+            0x04 => {
+                // Roll: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("roll:{}", idx)
+                } else {
+                    "roll".to_string()
+                }
+            }
+            0x05 => "scalar".to_string(),
+            0x06 => "commit".to_string(),
+            0x07 => "alloc".to_string(),
+            0x0a => "expr".to_string(),
+            0x0b => "neg".to_string(),
+            0x0c => "add".to_string(),
+            0x0d => "mul".to_string(),
+            0x0e => "eq".to_string(),
+            0x0f => "range".to_string(),
+            0x10 => "and".to_string(),
+            0x11 => "or".to_string(),
+            0x12 => "not".to_string(),
+            0x13 => "verify".to_string(),
+            0x14 => "unblind".to_string(),
+            0x15 => "issue".to_string(),
+            0x16 => "borrow".to_string(),
+            0x17 => "retire".to_string(),
+            0x19 => "fee".to_string(),
+            0x1a => "input".to_string(),
+            0x1b => {
+                // Output: read LE32 count
+                if i + 4 <= bytes.len() {
+                    let k = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("output:{}", k)
+                } else {
+                    "output".to_string()
+                }
+            }
+            0x1c => {
+                // Contract: read LE32 count
+                if i + 4 <= bytes.len() {
+                    let k = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("contract:{}", k)
+                } else {
+                    "contract".to_string()
+                }
+            }
+            0x1d => "log".to_string(),
+            0x1e => "call".to_string(),
+            0x1f => "signtx".to_string(),
+            0x20 => "signid".to_string(),
+            0x21 => "signtag".to_string(),
+            0x22 => {
+                // InputCoin: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("inputcoin:{}", idx)
+                } else {
+                    "inputcoin".to_string()
+                }
+            }
+            0x23 => {
+                // OutputCoin: read LE32 index
+                if i + 4 <= bytes.len() {
+                    let idx = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    i += 4;
+                    format!("outputcoin:{}", idx)
+                } else {
+                    "outputcoin".to_string()
+                }
+            }
+            _ => format!("ext:{:#04x}", opcode),
+        };
 
-        if opcode_has_data(opcode) {
-            // push or program: read 4-byte length, then skip data
-            if i + 5 <= byte_vec.len() {
-                let len = u32::from_le_bytes([
-                    byte_vec[i + 1],
-                    byte_vec[i + 2],
-                    byte_vec[i + 3],
-                    byte_vec[i + 4],
-                ]) as usize;
-                instructions.push(format!("{}:{}", name, len));
-                i += 5 + len;
-            } else {
-                instructions.push(name.to_string());
-                i += 1;
+        opcodes.push(name);
+    }
+
+    opcodes
+}
+
+/// Convert byte array Value to hex string
+fn bytes_array_to_hex(value: &serde_json::Value) -> Option<String> {
+    if let serde_json::Value::Array(bytes) = value {
+        let hex: String = bytes.iter()
+            .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+            .collect();
+        Some(hex)
+    } else {
+        None
+    }
+}
+
+/// Transform STATE data array to show meaningful labels for commitments
+fn transform_state_data(data: &mut serde_json::Value) {
+    if let serde_json::Value::Array(arr) = data {
+        for (idx, item) in arr.iter_mut().enumerate() {
+            if let serde_json::Value::Object(obj) = item {
+                // Check if this is a Commitment and extract the hex value (check both cases)
+                if let Some(commitment) = obj.get("Commitment").or_else(|| obj.get("commitment")) {
+                    // Try both "Closed" and "closed" keys
+                    let hex_value = if let Some(closed) = commitment.get("Closed").or_else(|| commitment.get("closed")) {
+                        // Check if it's already a string (hex) or still a byte array
+                        if let Some(s) = closed.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = closed.as_array() {
+                            // Convert byte array to hex
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            "".to_string()
+                        }
+                    } else {
+                        // If no Closed key, the commitment itself might be the value
+                        if let Some(s) = commitment.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = commitment.as_array() {
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            commitment.to_string()
+                        }
+                    };
+
+                    let label = match idx {
+                        0 => "total_locked_value",
+                        1 => "total_pool_share",
+                        _ => "commitment",
+                    };
+                    *item = serde_json::json!({
+                        label: hex_value
+                    });
+                }
             }
-        } else if opcode_has_arg(opcode) {
-            // Instructions with u32 argument
-            if i + 5 <= byte_vec.len() {
-                let arg = u32::from_le_bytes([
-                    byte_vec[i + 1],
-                    byte_vec[i + 2],
-                    byte_vec[i + 3],
-                    byte_vec[i + 4],
-                ]);
-                instructions.push(format!("{}:{}", name, arg));
-                i += 5;
-            } else {
-                instructions.push(name.to_string());
-                i += 1;
-            }
-        } else {
-            instructions.push(name.to_string());
-            i += 1;
         }
     }
-
-    instructions
 }
 
-/// Convert byte array to hex string
-fn bytes_to_hex(bytes: &[Value]) -> String {
-    bytes.iter()
-        .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
-        .collect()
-}
+/// Transform MEMO data array to show meaningful labels and values
+fn transform_memo_data(data: &mut serde_json::Value) {
+    if let serde_json::Value::Array(arr) = data {
+        let mut new_data = Vec::new();
 
-/// Get description for input/output type
-fn get_type_description(type_name: &str) -> &'static str {
-    match type_name {
-        "Coin" => "Spendable coin output with encrypted value",
-        "Memo" => "Script-locked memo output for order data",
-        "State" => "Contract state output",
-        _ => "Unknown output type",
-    }
-}
+        for (idx, item) in arr.iter().enumerate() {
+            if let serde_json::Value::Object(obj) = item {
+                // Handle Scalar values
+                if let Some(scalar_obj) = obj.get("Scalar") {
+                    if let Some(scalar_inner) = scalar_obj.get("Scalar") {
+                        if let Some(bytes) = scalar_inner.as_array() {
+                            // Convert first 8 bytes to u64 little-endian
+                            let mut arr_8 = [0u8; 8];
+                            for (i, byte_val) in bytes.iter().take(8).enumerate() {
+                                if let Some(b) = byte_val.as_u64() {
+                                    arr_8[i] = b as u8;
+                                }
+                            }
+                            let u64_val = u64::from_le_bytes(arr_8);
 
-/// Transform the JSON to convert txid, program, and scalars to human-readable formats
-fn transform_decoded_tx(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            // Convert txid byte arrays to hex strings
-            if map.contains_key("txid") {
-                if let Some(Value::Array(bytes)) = map.get("txid") {
-                    let hex_str = bytes_to_hex(bytes);
-                    map.insert("txid".to_string(), Value::String(hex_str));
-                }
-            }
-
-            // Convert program byte arrays to instruction lists
-            if map.contains_key("program") {
-                if let Some(Value::Array(bytes)) = map.get("program") {
-                    let instructions = decode_program_bytes(bytes);
-                    map.insert("program".to_string(), Value::Array(
-                        instructions.into_iter().map(Value::String).collect()
-                    ));
-                }
-            }
-
-            // Convert encrypt.c and encrypt.d byte arrays to hex
-            if map.contains_key("encrypt") {
-                if let Some(Value::Object(encrypt_map)) = map.get_mut("encrypt") {
-                    if let Some(Value::Array(c_bytes)) = encrypt_map.get("c") {
-                        let hex_str = bytes_to_hex(c_bytes);
-                        encrypt_map.insert("c".to_string(), Value::String(hex_str));
-                    }
-                    if let Some(Value::Array(d_bytes)) = encrypt_map.get("d") {
-                        let hex_str = bytes_to_hex(d_bytes);
-                        encrypt_map.insert("d".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert commitment (Closed variant) to hex
-            if map.contains_key("commitment") {
-                if let Some(Value::Object(commit_map)) = map.get_mut("commitment") {
-                    if let Some(Value::Array(closed_bytes)) = commit_map.get("Closed") {
-                        let hex_str = bytes_to_hex(closed_bytes);
-                        commit_map.insert("Closed".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert proof byte array to hex
-            if map.contains_key("proof") {
-                if let Some(Value::Array(bytes)) = map.get("proof") {
-                    let hex_str = bytes_to_hex(bytes);
-                    map.insert("proof".to_string(), Value::String(hex_str));
-                }
-            }
-
-            // Convert witness.sign to hex
-            if map.contains_key("witness") {
-                if let Some(Value::Object(witness_map)) = map.get_mut("witness") {
-                    if let Some(Value::Array(sign_bytes)) = witness_map.get("sign") {
-                        let hex_str = bytes_to_hex(sign_bytes);
-                        witness_map.insert("sign".to_string(), Value::String(hex_str));
-                    }
-                }
-            }
-
-            // Convert call_proof.path.neighbors to hex array
-            if map.contains_key("call_proof") {
-                if let Some(Value::Object(call_proof_map)) = map.get_mut("call_proof") {
-                    if let Some(Value::Object(path_map)) = call_proof_map.get_mut("path") {
-                        if let Some(Value::Array(neighbors)) = path_map.get("neighbors") {
-                            let hex_neighbors: Vec<Value> = neighbors.iter()
-                                .filter_map(|n| {
-                                    if let Value::Array(bytes) = n {
-                                        Some(Value::String(bytes_to_hex(bytes)))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            path_map.insert("neighbors".to_string(), Value::Array(hex_neighbors));
+                            match idx {
+                                0 => {
+                                    // Position size (divided by 10^8)
+                                    let pos_size = u64_val as f64 / 100_000_000.0;
+                                    new_data.push(serde_json::json!({
+                                        "position_size": pos_size
+                                    }));
+                                }
+                                2 => {
+                                    // Entry price
+                                    new_data.push(serde_json::json!({
+                                        "entry_price": u64_val
+                                    }));
+                                }
+                                3 => {
+                                    // Order side (1 = short, other = long)
+                                    let side = if u64_val == 1 { "short" } else { "long" };
+                                    new_data.push(serde_json::json!({
+                                        "order_side": side
+                                    }));
+                                }
+                                _ => {
+                                    new_data.push(serde_json::json!({
+                                        "scalar": u64_val
+                                    }));
+                                }
+                            }
                         }
                     }
-                    // Convert network bytes to hex if present
-                    if let Some(Value::Array(network_bytes)) = call_proof_map.get("network") {
-                        let hex_str = bytes_to_hex(network_bytes);
-                        call_proof_map.insert("network".to_string(), Value::String(hex_str));
+                }
+                // Handle Commitment values - extract the hex value (check both cases)
+                else if let Some(commitment) = obj.get("Commitment").or_else(|| obj.get("commitment")) {
+                    // Try both "Closed" and "closed" keys
+                    let hex_value = if let Some(closed) = commitment.get("Closed").or_else(|| commitment.get("closed")) {
+                        // Check if it's already a string (hex) or still a byte array
+                        if let Some(s) = closed.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = closed.as_array() {
+                            // Convert byte array to hex
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            "".to_string()
+                        }
+                    } else {
+                        // If no Closed key, the commitment itself might be the value
+                        if let Some(s) = commitment.as_str() {
+                            s.to_string()
+                        } else if let Some(bytes) = commitment.as_array() {
+                            bytes.iter()
+                                .filter_map(|v| v.as_u64().map(|n| format!("{:02x}", n as u8)))
+                                .collect()
+                        } else {
+                            // Return the whole commitment object as string for debugging
+                            commitment.to_string()
+                        }
+                    };
+
+                    match idx {
+                        1 => {
+                            new_data.push(serde_json::json!({
+                                "leverage": hex_value
+                            }));
+                        }
+                        _ => {
+                            new_data.push(serde_json::json!({
+                                "commitment": hex_value
+                            }));
+                        }
                     }
                 }
-            }
-
-            // Add description for in_type
-            if let Some(Value::String(in_type)) = map.get("in_type").cloned() {
-                let desc = get_type_description(&in_type);
-                map.insert("in_type_description".to_string(), Value::String(desc.to_string()));
-            }
-
-            // Add description for out_type
-            if let Some(Value::String(out_type)) = map.get("out_type").cloned() {
-                let desc = get_type_description(&out_type);
-                map.insert("out_type_description".to_string(), Value::String(desc.to_string()));
-            }
-
-            // Format timebounds with description
-            if let Some(Value::Number(tb)) = map.get("timebounds").cloned() {
-                if let Some(tb_val) = tb.as_u64() {
-                    map.insert("timebounds".to_string(), serde_json::json!({
-                        "value": tb_val,
-                        "description": "Block height or relative timelock"
-                    }));
-                }
-            }
-
-            // Convert Scalar objects to u64 values
-            if let Some(Value::Object(scalar_map)) = map.get("Scalar") {
-                if let Some(Value::Array(bytes)) = scalar_map.get("Scalar") {
-                    if let Some(u64_value) = bytes_to_u64(bytes) {
-                        *value = serde_json::json!({
-                            "scalar": u64_value
-                        });
-                        return;
-                    }
-                }
-            }
-
-            // Recursively process all values in the object
-            for (_, v) in map.iter_mut() {
-                transform_decoded_tx(v);
             }
         }
-        Value::Array(arr) => {
-            // Recursively process all elements in the array
+
+        *data = serde_json::Value::Array(new_data);
+    }
+}
+
+/// Transform byte arrays in the decoded transaction to hex strings
+fn transform_byte_arrays(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Convert txid field in utxo
+            if let Some(txid) = map.get("txid") {
+                if let Some(hex) = bytes_array_to_hex(txid) {
+                    map.insert("txid".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert proof field
+            if let Some(proof) = map.get("proof") {
+                if let Some(hex) = bytes_array_to_hex(proof) {
+                    map.insert("proof".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert sign field in witness
+            if let Some(sign) = map.get("sign") {
+                if let Some(hex) = bytes_array_to_hex(sign) {
+                    map.insert("sign".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert value_proof.Dleq arrays to hex
+            if let Some(serde_json::Value::Object(vp_map)) = map.get_mut("value_proof") {
+                if let Some(serde_json::Value::Array(dleq)) = vp_map.get_mut("Dleq") {
+                    for item in dleq.iter_mut() {
+                        if let serde_json::Value::Array(inner) = item {
+                            if inner.len() == 1 {
+                                if let Some(arr) = inner.first() {
+                                    if let Some(hex) = bytes_array_to_hex(arr) {
+                                        *item = serde_json::Value::String(hex);
+                                    }
+                                }
+                            } else if !inner.is_empty() && inner.first().map(|v| v.is_u64()).unwrap_or(false) {
+                                // Direct byte array
+                                if let Some(hex) = bytes_array_to_hex(item) {
+                                    *item = serde_json::Value::String(hex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Convert encrypt.c and encrypt.d byte arrays to hex strings
+            if let Some(serde_json::Value::Object(encrypt_map)) = map.get_mut("encrypt") {
+                if let Some(c) = encrypt_map.get("c") {
+                    if let Some(hex) = bytes_array_to_hex(c) {
+                        encrypt_map.insert("c".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(d) = encrypt_map.get("d") {
+                    if let Some(hex) = bytes_array_to_hex(d) {
+                        encrypt_map.insert("d".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert neighbors byte arrays to hex strings (in call_proof.path.neighbors)
+            if let Some(serde_json::Value::Array(neighbors)) = map.get_mut("neighbors") {
+                for item in neighbors.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
+                    }
+                }
+            }
+
+            // Convert commitment.Closed byte array to hex string
+            if let Some(serde_json::Value::Object(commitment_map)) = map.get_mut("commitment") {
+                if let Some(closed) = commitment_map.get("Closed") {
+                    if let Some(hex) = bytes_array_to_hex(closed) {
+                        commitment_map.insert("Closed".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert Commitment.Closed byte array to hex string (capital C variant)
+            if let Some(serde_json::Value::Object(commitment_map)) = map.get_mut("Commitment") {
+                if let Some(closed) = commitment_map.get("Closed") {
+                    if let Some(hex) = bytes_array_to_hex(closed) {
+                        commitment_map.insert("Closed".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert witness zero_proof byte arrays to hex strings
+            if let Some(serde_json::Value::Array(zero_proof)) = map.get_mut("zero_proof") {
+                for item in zero_proof.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
+                    }
+                }
+            }
+
+            // Handle State witness object - convert sign and zero_proof inside
+            if let Some(serde_json::Value::Object(state_witness)) = map.get_mut("State") {
+                // Only process if this looks like a witness (has sign/zero_proof, not out_state)
+                if state_witness.contains_key("sign") && !state_witness.contains_key("out_state") {
+                    // Convert sign to hex
+                    if let Some(sign) = state_witness.get("sign") {
+                        if let Some(hex) = bytes_array_to_hex(sign) {
+                            state_witness.insert("sign".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    // Convert zero_proof arrays to hex
+                    if let Some(serde_json::Value::Array(zero_proof)) = state_witness.get_mut("zero_proof") {
+                        for item in zero_proof.iter_mut() {
+                            if let Some(hex) = bytes_array_to_hex(item) {
+                                *item = serde_json::Value::String(hex);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Convert Dleq value_proof arrays to hex strings (handles nested arrays)
+            if let Some(serde_json::Value::Array(dleq)) = map.get_mut("Dleq") {
+                for item in dleq.iter_mut() {
+                    if let serde_json::Value::Array(inner) = item {
+                        // Check if this is a nested array of arrays (like in sender_account_dleq)
+                        if !inner.is_empty() {
+                            if let Some(first) = inner.first() {
+                                if first.is_array() {
+                                    // Nested array - convert each inner array to hex
+                                    for nested_item in inner.iter_mut() {
+                                        if let Some(hex) = bytes_array_to_hex(nested_item) {
+                                            *nested_item = serde_json::Value::String(hex);
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        // Direct byte array
+                        if let Some(hex) = bytes_array_to_hex(item) {
+                            if !hex.is_empty() {
+                                *item = serde_json::Value::String(hex);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Convert Proof witness Dlog arrays to hex strings
+            if let Some(serde_json::Value::Object(proof_map)) = map.get_mut("Proof") {
+                if let Some(serde_json::Value::Array(dlog)) = proof_map.get_mut("Dlog") {
+                    for item in dlog.iter_mut() {
+                        if let serde_json::Value::Array(inner) = item {
+                            // Check if this is a nested array (array containing a byte array)
+                            if inner.len() == 1 {
+                                if let Some(arr) = inner.first() {
+                                    if let Some(hex) = bytes_array_to_hex(arr) {
+                                        *item = serde_json::Value::String(hex);
+                                    }
+                                }
+                            } else if !inner.is_empty() && inner.first().map(|v| v.is_u64()).unwrap_or(false) {
+                                // Direct byte array
+                                if let Some(hex) = bytes_array_to_hex(item) {
+                                    *item = serde_json::Value::String(hex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Convert comm.c and comm.d byte arrays to hex strings (in proof accounts)
+            if let Some(serde_json::Value::Object(comm_map)) = map.get_mut("comm") {
+                if let Some(c) = comm_map.get("c") {
+                    if let Some(hex) = bytes_array_to_hex(c) {
+                        comm_map.insert("c".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(d) = comm_map.get("d") {
+                    if let Some(hex) = bytes_array_to_hex(d) {
+                        comm_map.insert("d".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert pk.gr and pk.grsk byte arrays to hex strings (in proof accounts)
+            if let Some(serde_json::Value::Object(pk_map)) = map.get_mut("pk") {
+                if let Some(gr) = pk_map.get("gr") {
+                    if let Some(hex) = bytes_array_to_hex(gr) {
+                        pk_map.insert("gr".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(grsk) = pk_map.get("grsk") {
+                    if let Some(hex) = bytes_array_to_hex(grsk) {
+                        pk_map.insert("grsk".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Convert range_proof byte arrays to hex strings
+            if let Some(serde_json::Value::Array(range_proof)) = map.get_mut("range_proof") {
+                for item in range_proof.iter_mut() {
+                    if let Some(hex) = bytes_array_to_hex(item) {
+                        *item = serde_json::Value::String(hex);
+                    }
+                }
+            }
+
+            // Convert encrypt_scalar (Scalar type) to hex string - used in Message/RevealProof
+            if let Some(encrypt_scalar) = map.get("encrypt_scalar") {
+                // Scalar can be serialized as {"Scalar": [bytes...]} or directly as [bytes...]
+                if let Some(scalar_obj) = encrypt_scalar.as_object() {
+                    if let Some(scalar_bytes) = scalar_obj.get("Scalar") {
+                        if let Some(hex) = bytes_array_to_hex(scalar_bytes) {
+                            map.insert("encrypt_scalar".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                } else if let Some(hex) = bytes_array_to_hex(encrypt_scalar) {
+                    map.insert("encrypt_scalar".to_string(), serde_json::Value::String(hex));
+                }
+            }
+
+            // Convert signature witness in Message transactions
+            // Witness::Signature can be: { "Signature": [bytes] } (direct byte array)
+            // or { "Signature": { "s": [bytes], "R": [bytes] } } (object with fields)
+            if let Some(serde_json::Value::Object(sig_map)) = map.get_mut("signature") {
+                // Handle Witness::Signature variant - check if it's a direct byte array
+                if let Some(sig_val) = sig_map.get("Signature") {
+                    if sig_val.is_array() {
+                        // Direct byte array: {"Signature": [bytes]}
+                        if let Some(hex) = bytes_array_to_hex(sig_val) {
+                            sig_map.insert("Signature".to_string(), serde_json::Value::String(hex));
+                        }
+                    } else if let Some(inner_sig) = sig_val.as_object() {
+                        // Object with s and R: {"Signature": {"s": [...], "R": [...]}}
+                        let mut new_inner = inner_sig.clone();
+                        if let Some(s_val) = inner_sig.get("s") {
+                            if let Some(hex) = bytes_array_to_hex(s_val) {
+                                new_inner.insert("s".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                        if let Some(r_val) = inner_sig.get("R") {
+                            if let Some(hex) = bytes_array_to_hex(r_val) {
+                                new_inner.insert("R".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                        sig_map.insert("Signature".to_string(), serde_json::Value::Object(new_inner));
+                    }
+                }
+                // Also handle direct sign/zero_proof structure (other witness types)
+                if let Some(sign) = sig_map.get("sign") {
+                    if let Some(hex) = bytes_array_to_hex(sign) {
+                        sig_map.insert("sign".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+                if let Some(serde_json::Value::Array(zero_proof)) = sig_map.get_mut("zero_proof") {
+                    for item in zero_proof.iter_mut() {
+                        if let Some(hex) = bytes_array_to_hex(item) {
+                            *item = serde_json::Value::String(hex);
+                        }
+                    }
+                }
+            }
+
+            // Handle Signature at top level - can be direct byte array or object
+            if let Some(sig_val) = map.get("Signature") {
+                if sig_val.is_array() {
+                    // Direct byte array
+                    if let Some(hex) = bytes_array_to_hex(sig_val) {
+                        map.insert("Signature".to_string(), serde_json::Value::String(hex));
+                    }
+                } else if let Some(sig_inner) = sig_val.as_object() {
+                    // Object with s and R
+                    let mut new_inner = sig_inner.clone();
+                    if let Some(s_val) = sig_inner.get("s") {
+                        if let Some(hex) = bytes_array_to_hex(s_val) {
+                            new_inner.insert("s".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    if let Some(r_val) = sig_inner.get("R") {
+                        if let Some(hex) = bytes_array_to_hex(r_val) {
+                            new_inner.insert("R".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                    map.insert("Signature".to_string(), serde_json::Value::Object(new_inner));
+                }
+            }
+
+            // Transform State input/output data with meaningful labels
+            if let Some(serde_json::Value::Object(state_map)) = map.get_mut("State") {
+                if let Some(data) = state_map.get_mut("data") {
+                    transform_state_data(data);
+                }
+            }
+
+            // Transform Memo input/output data with meaningful labels
+            if let Some(serde_json::Value::Object(memo_map)) = map.get_mut("Memo") {
+                // Output Memo: data is directly in Memo
+                if let Some(data) = memo_map.get_mut("data") {
+                    transform_memo_data(data);
+                }
+                // Input Memo: data is inside out_memo (nested OutputMemo)
+                if let Some(serde_json::Value::Object(out_memo)) = memo_map.get_mut("out_memo") {
+                    if let Some(data) = out_memo.get_mut("data") {
+                        transform_memo_data(data);
+                    }
+                }
+                // Convert coin_value Commitment to hex (in Input Memo)
+                if let Some(serde_json::Value::Object(coin_value)) = memo_map.get_mut("coin_value") {
+                    if let Some(closed) = coin_value.get("Closed") {
+                        if let Some(hex) = bytes_array_to_hex(closed) {
+                            coin_value.insert("Closed".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                }
+            }
+
+            // Convert tx_data (zkvm::String) - can be Scalar, Commitment, or Opaque
+            if let Some(tx_data) = map.get_mut("tx_data") {
+                if let Some(tx_data_obj) = tx_data.as_object_mut() {
+                    // Handle Scalar variant: {"Scalar": {"Scalar": [bytes...]}}
+                    if let Some(scalar_obj) = tx_data_obj.get("Scalar") {
+                        if let Some(scalar_inner) = scalar_obj.as_object() {
+                            if let Some(scalar_bytes) = scalar_inner.get("Scalar") {
+                                if let Some(hex) = bytes_array_to_hex(scalar_bytes) {
+                                    // Replace with hex string
+                                    tx_data_obj.insert("Scalar".to_string(), serde_json::Value::String(hex));
+                                }
+                            }
+                        }
+                    }
+                    // Handle Commitment variant: {"Commitment": {"Closed": [bytes...]}}
+                    if let Some(serde_json::Value::Object(commitment)) = tx_data_obj.get_mut("Commitment") {
+                        if let Some(closed) = commitment.get("Closed") {
+                            if let Some(hex) = bytes_array_to_hex(closed) {
+                                commitment.insert("Closed".to_string(), serde_json::Value::String(hex));
+                            }
+                        }
+                    }
+                    // Handle Opaque variant: {"Opaque": [bytes...]}
+                    if let Some(opaque) = tx_data_obj.get("Opaque") {
+                        if let Some(hex) = bytes_array_to_hex(opaque) {
+                            tx_data_obj.insert("Opaque".to_string(), serde_json::Value::String(hex));
+                        }
+                    }
+                }
+            }
+
+            // Convert general Scalar objects: {"Scalar": {"Scalar": [bytes...]}} -> {"Scalar": "hex"}
+            if let Some(serde_json::Value::Object(scalar_outer)) = map.get_mut("Scalar") {
+                if let Some(scalar_inner) = scalar_outer.get("Scalar") {
+                    if let Some(hex) = bytes_array_to_hex(scalar_inner) {
+                        scalar_outer.insert("Scalar".to_string(), serde_json::Value::String(hex));
+                    }
+                }
+            }
+
+            // Recursively transform nested objects
+            for (_, v) in map.iter_mut() {
+                transform_byte_arrays(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                transform_decoded_tx(item);
+                transform_byte_arrays(item);
             }
         }
         _ => {}
     }
 }
 
-/// Convert a byte array (first 8 bytes) to u64 using little-endian
-fn bytes_to_u64(bytes: &[Value]) -> Option<u64> {
-    if bytes.len() < 8 {
-        return None;
-    }
-
-    let mut array_8 = [0u8; 8];
-    for (i, byte_value) in bytes.iter().take(8).enumerate() {
-        if let Some(byte) = byte_value.as_u64() {
-            array_8[i] = byte as u8;
-        } else {
-            return None;
-        }
-    }
-
-    Some(u64::from_le_bytes(array_8))
-}
-
-/// Extract transaction summary from the decoded transaction
-fn extract_tx_summary(data: &Value) -> Value {
-    let mut summary = serde_json::Map::new();
-
-    // Get tx_type from the transaction structure
-    if let Some(tx) = data.get("tx") {
-        if tx.get("TransactionTransfer").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Transfer".to_string()));
-        } else if tx.get("TransactionScript").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Script".to_string()));
-
-            // Extract script-specific info
-            if let Some(script_tx) = tx.get("TransactionScript") {
-                // Get input/output types
-                if let Some(in_type) = script_tx.get("in_type") {
-                    summary.insert("input_type".to_string(), in_type.clone());
-                }
-                if let Some(out_type) = script_tx.get("out_type") {
-                    summary.insert("output_type".to_string(), out_type.clone());
-                }
-
-                // Count inputs/outputs
-                if let Some(Value::Array(inputs)) = script_tx.get("inputs") {
-                    summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
-                }
-                if let Some(Value::Array(outputs)) = script_tx.get("outputs") {
-                    summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
-                }
-
-                // Get fee
-                if let Some(fee) = script_tx.get("fee") {
-                    summary.insert("fee".to_string(), fee.clone());
-                }
-
-                // Check if has proof
-                if let Some(proof) = script_tx.get("proof") {
-                    let has_proof = match proof {
-                        Value::Null => false,
-                        Value::Array(arr) => !arr.is_empty(),
-                        Value::String(s) => !s.is_empty(),
-                        _ => true,
-                    };
-                    summary.insert("has_proof".to_string(), Value::Bool(has_proof));
-                }
-            }
-        } else if tx.get("Message").is_some() {
-            summary.insert("tx_type".to_string(), Value::String("Message".to_string()));
-        }
-    }
-
-    // For Transfer transactions, extract different fields
-    if let Some(tx) = data.get("tx") {
-        if let Some(transfer_tx) = tx.get("TransactionTransfer") {
-            // Count inputs/outputs
-            if let Some(Value::Array(inputs)) = transfer_tx.get("inputs") {
-                summary.insert("input_count".to_string(), Value::Number(inputs.len().into()));
-            }
-            if let Some(Value::Array(outputs)) = transfer_tx.get("outputs") {
-                summary.insert("output_count".to_string(), Value::Number(outputs.len().into()));
-            }
-
-            // Get fee
-            if let Some(fee) = transfer_tx.get("fee") {
-                summary.insert("fee".to_string(), fee.clone());
-            }
-        }
-    }
-
-    Value::Object(summary)
-}
-
-/// API endpoint: POST /api/decode-transaction
+/// API endpoint: POST /api/decode-zkos-transaction
+///
+/// Returns the raw decoded transaction JSON without any transformations.
+/// Useful for debugging or when you need the original data structure.
 ///
 /// Example request:
 /// ```json
 /// {
-///   "tx_byte_code": "0x123abc...",
-///   "block_height": 12345
+///   "tx_byte_code": "0x123abc..."
 /// }
 /// ```
-async fn decode_transaction_endpoint(
+async fn decode_transaction_raw_endpoint(
     req: web::Json<DecodeRequest>,
 ) -> impl Responder {
-
     match decode_transaction(&req.tx_byte_code) {
         Ok(decoded_tx) => {
             let mut data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
-
-            // Extract summary before transformation (to access original structure)
-            let summary = extract_tx_summary(&data);
 
             // Determine tx_type from data structure
             let tx_type = if let Some(tx) = data.get("tx") {
@@ -512,17 +878,176 @@ async fn decode_transaction_endpoint(
                 "Unknown"
             };
 
-            // Transform txid to hex, program to instructions, scalars to u64, etc.
-            transform_decoded_tx(&mut data);
+            // Build summary object
+            let mut summary = serde_json::json!({
+                "tx_type": tx_type
+            });
 
-            // Add summary to the data object
-            if let Value::Object(ref mut map) = data {
-                map.insert("summary".to_string(), summary);
+            // For Message transactions, extract msg_type, fee, amount, etc.
+            if let Some(tx) = data.get("tx") {
+                if let Some(message_tx) = tx.get("Message") {
+                    // Extract msg_type
+                    if let Some(msg_type) = message_tx.get("msg_type") {
+                        summary["msg_type"] = msg_type.clone();
+                    }
+                    // Extract fee
+                    if let Some(fee) = message_tx.get("fee") {
+                        summary["fee"] = fee.clone();
+                    }
+                    // Extract version
+                    if let Some(version) = message_tx.get("version") {
+                        summary["version"] = version.clone();
+                    }
+                    // Extract msg_data (initial address for burn)
+                    if let Some(msg_data) = message_tx.get("msg_data") {
+                        summary["msg_data"] = msg_data.clone();
+                    }
+                    // Extract amount from proof
+                    if let Some(proof) = message_tx.get("proof") {
+                        if let Some(amount) = proof.get("amount") {
+                            summary["amount"] = amount.clone();
+                        }
+                    }
+                }
             }
 
-            HttpResponse::Ok().json(DecodeResponse {
+            // For Script transactions, extract program and determine program_type and order_type
+            if let Some(tx) = data.get("tx") {
+                if let Some(script_tx) = tx.get("TransactionScript") {
+                    if let Some(program) = script_tx.get("program") {
+                        if let Some(program_hex) = program_bytes_to_hex(program) {
+                            let program_type = get_program_type(&program_hex);
+                            let order_type = get_order_type(program_type);
+                            summary["program_type"] = serde_json::Value::String(program_type.to_string());
+                            summary["order_type"] = serde_json::Value::String(order_type.to_string());
+
+                            // Decode program opcodes into human-readable list
+                            let opcodes = decode_program_opcodes(program);
+                            summary["program_opcodes"] = serde_json::Value::Array(
+                                opcodes.into_iter().map(serde_json::Value::String).collect()
+                            );
+
+                            // For order_open, extract position_size and order_side from output Memo (COIN -> MEMO)
+                            // Search through ALL outputs to find the Memo
+                            if order_type == "order_open" {
+                                if let Some(outputs) = script_tx.get("outputs") {
+                                    if let Some(outputs_arr) = outputs.as_array() {
+                                        for output in outputs_arr {
+                                            if let Some(memo) = output.get("output").and_then(|o| o.get("Memo")) {
+                                                if let Some(data) = memo.get("data") {
+                                                    // data[0] = position_size (divided by 10^8)
+                                                    if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                        let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                        if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                            summary["position_size"] = serde_json::Value::Number(num);
+                                                        }
+                                                    }
+                                                    // data[3] = order_side (1 = short, other = long)
+                                                    if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                        let side = if side_val == 1 { "short" } else { "long" };
+                                                        summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                    }
+                                                    break; // Found the Memo, stop searching
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // For order_close, extract position_size and order_side from input Memo (MEMO -> COIN)
+                            // Search through ALL inputs to find the Memo
+                            // Note: Input Memo has data nested inside out_memo (embedded OutputMemo)
+                            if order_type == "order_close" {
+                                if let Some(inputs) = script_tx.get("inputs") {
+                                    if let Some(inputs_arr) = inputs.as_array() {
+                                        for input in inputs_arr {
+                                            if let Some(memo) = input.get("input").and_then(|i| i.get("Memo")) {
+                                                // Input Memo: data is inside out_memo (nested OutputMemo)
+                                                if let Some(out_memo) = memo.get("out_memo") {
+                                                    if let Some(data) = out_memo.get("data") {
+                                                        // data[0] = position_size (divided by 10^8)
+                                                        if let Some(pos_size) = extract_scalar_u64_from_data(data, 0) {
+                                                            let pos_size_converted = pos_size as f64 / 100_000_000.0;
+                                                            if let Some(num) = serde_json::Number::from_f64(pos_size_converted) {
+                                                                summary["position_size"] = serde_json::Value::Number(num);
+                                                            }
+                                                        }
+                                                        // data[3] = order_side (1 = short, other = long)
+                                                        if let Some(side_val) = extract_scalar_u64_from_data(data, 3) {
+                                                            let side = if side_val == 1 { "short" } else { "long" };
+                                                            summary["order_side"] = serde_json::Value::String(side.to_string());
+                                                        }
+                                                        break; // Found the Memo, stop searching
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Transform byte arrays (proof, sign, value_proof) to hex strings
+            transform_byte_arrays(&mut data);
+
+            HttpResponse::Ok().json(DecodeRawResponse {
                 success: true,
                 tx_type: tx_type.to_string(),
+                summary: Some(summary),
+                data,
+            })
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to decode transaction: {:?}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                success: false,
+                error: format!("Failed to decode transaction: {}", e),
+            })
+        }
+    }
+}
+
+/// API endpoint: POST /api/decode-zkos-transaction-raw
+///
+/// Returns the raw decoded transaction JSON without any transformations.
+/// No hex conversions, no field renaming, just the pure deserialized output.
+///
+/// Example request:
+/// ```json
+/// {
+///   "tx_byte_code": "0x123abc..."
+/// }
+/// ```
+async fn decode_zkos_transaction_raw_endpoint(
+    req: web::Json<DecodeRequest>,
+) -> impl Responder {
+    match decode_transaction(&req.tx_byte_code) {
+        Ok(decoded_tx) => {
+            let data = serde_json::to_value(&decoded_tx).unwrap_or(serde_json::json!({}));
+
+            // Determine tx_type from data structure
+            let tx_type = if let Some(tx) = data.get("tx") {
+                if tx.get("TransactionTransfer").is_some() {
+                    "Transfer"
+                } else if tx.get("TransactionScript").is_some() {
+                    "Script"
+                } else if tx.get("Message").is_some() {
+                    "Message"
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            };
+
+            HttpResponse::Ok().json(DecodeRawResponse {
+                success: true,
+                tx_type: tx_type.to_string(),
+                summary: None,
                 data,
             })
         }
@@ -1000,7 +1525,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
             .route("/health", web::get().to(health_check))
-            .route("/decode-transaction", web::post().to(decode_transaction_endpoint))
+            .route("/decode-zkos-transaction", web::post().to(decode_transaction_raw_endpoint))
+            .route("/decode-zkos-transaction-raw", web::post().to(decode_zkos_transaction_raw_endpoint))
             .route("/transactions/{t_address}", web::get().to(get_transactions))
             .route("/funding/{t_address}", web::get().to(get_funds_moved))
             .route("/exchange-withdrawal/{t_address}", web::get().to(get_dark_burned_sats))
