@@ -10,8 +10,7 @@ use quis_quis_tx::decode_qq_transaction;
 
 #[actix_web::main]
 async fn main() {
-    dotenv::dotenv().expect("Failed loading dotenv");
-    db::run_migrations().expect("Failed to run database migrations");
+    dotenv::dotenv().ok();
 
     // Get configuration from environment variables
     let api_host = std::env::var("API_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -19,6 +18,22 @@ async fn main() {
         .unwrap_or_else(|_| "8080".to_string())
         .parse::<u16>()
         .expect("API_PORT must be a valid port number");
+
+    let decode_only = std::env::var("DECODE_ONLY")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    // Decode-only mode: just run the decode API endpoints, no DB or indexer needed
+    if decode_only {
+        println!("🚀 Starting in DECODE_ONLY mode (no DB, no indexer)...");
+        if let Err(e) = api::start_api_server_decode_only(&api_host, api_port).await {
+            eprintln!("❌ API server error: {}", e);
+        }
+        return;
+    }
+
+    db::run_migrations().expect("Failed to run database migrations");
 
     let enable_api = std::env::var("ENABLE_API")
         .unwrap_or_else(|_| "true".to_string())
@@ -33,7 +48,7 @@ async fn main() {
     // Run both API server and indexer concurrently
     if enable_api && enable_indexer {
         println!("🚀 Starting both API server and blockchain indexer...");
-        
+
         // Spawn indexer in background thread (since it's blocking)
         let indexer_handle = std::thread::spawn(|| {
             pubsub_chain::subscribe_block();

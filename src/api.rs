@@ -1538,6 +1538,39 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
+/// Start the API server in decode-only mode (no DB required)
+pub async fn start_api_server_decode_only(host: &str, port: u16) -> std::io::Result<()> {
+    let openapi = ApiDoc::openapi();
+
+    println!("🚀 Starting decode-only API server at http://{}:{}", host, port);
+    println!("📚 Swagger UI available at http://{}:{}/swagger-ui/", host, port);
+
+    HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .supports_credentials()
+            .max_age(3600);
+
+        App::new()
+            .wrap(cors)
+            .service(
+                SwaggerUi::new("/swagger-ui/{_:.*}")
+                    .url("/api-docs/openapi.json", openapi.clone())
+            )
+            .service(
+                web::scope("/api")
+                    .route("/health", web::get().to(health_check))
+                    .route("/decode-zkos-transaction", web::post().to(decode_transaction_raw_endpoint))
+                    .route("/decode-zkos-transaction-raw", web::post().to(decode_zkos_transaction_raw_endpoint))
+            )
+    })
+    .bind((host, port))?
+    .run()
+    .await
+}
+
 /// Start the API server
 pub async fn start_api_server(host: &str, port: u16) -> std::io::Result<()> {
     let openapi = ApiDoc::openapi();
