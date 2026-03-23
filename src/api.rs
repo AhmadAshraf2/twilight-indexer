@@ -986,6 +986,30 @@ async fn decode_transaction_raw_endpoint(
                                     }
                                 }
                             }
+
+                            // For settle/liquidate orders, extract price from tx_data Scalar
+                            if program_type == "SettleTraderOrder"
+                                || program_type == "SettleTraderOrderNegativeMarginDifference"
+                                || program_type == "SettleLendOrder"
+                                || program_type == "LiquidateOrder"
+                            {
+                                if let Some(tx_data) = script_tx.get("tx_data") {
+                                    if let Some(scalar_obj) = tx_data.get("Scalar") {
+                                        if let Some(scalar_inner) = scalar_obj.get("Scalar") {
+                                            if let Some(bytes) = scalar_inner.as_array() {
+                                                let mut arr_8 = [0u8; 8];
+                                                for (i, byte_val) in bytes.iter().take(8).enumerate() {
+                                                    if let Some(v) = byte_val.as_u64() {
+                                                        arr_8[i] = v as u8;
+                                                    }
+                                                }
+                                                let price = u64::from_le_bytes(arr_8);
+                                                summary["liquidate_settle_price"] = serde_json::json!(price);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
